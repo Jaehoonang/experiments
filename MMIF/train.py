@@ -6,10 +6,18 @@ from data.dataset import ex_data
 import matplotlib.pyplot as plt
 from torchvision import transforms
 
+# transform = transforms.Compose([
+#         transforms.Resize((image_size, image_size)),
+#         transforms.Grayscale(),
+#         transforms.ToTensor(),
+#         transforms.Normalize(mean=[0.5], std=[0.5])
+#     ])
+
+
 
 if __name__=="__main__":
-    x_visible = ex_data(root_dir = r"C:\Users\12wkd\Desktop\mri2.png")
-    x_infra = ex_data(root_dir= r"C:\Users\12wkd\Desktop\pet2.png")
+    x_visible = ex_data(root_dir = r"C:\Users\12wkd\Desktop\experiments\MMIF\LLVIP\visible\train\010001.jpg")
+    x_infra = ex_data(root_dir= r"C:\Users\12wkd\Desktop\experiments\MMIF\LLVIP\infrared\train\010001.jpg")
 
     xfm = DWTForward(J=1, mode="periodization", wave='haar')  # Accepts all wave types available to PyWavelets
     ifm = DWTInverse(mode="periodization", wave='haar')
@@ -21,7 +29,7 @@ if __name__=="__main__":
     difference_Yh = [Yh_visible[i] - Yh_infrared[i] for i in range(len(Yh_visible))]
 
     threshold = 0.7
-    masked = (np.abs(difference_Yl) >= threshold)
+    masked = (difference_Yl) >= threshold
     print(masked)
     mask_yl = difference_Yl * masked
     print(mask_yl)

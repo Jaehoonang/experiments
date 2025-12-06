@@ -1,4 +1,10 @@
 LLVIP/
 MSRS-main/
+onlytest/
+
 pytorch_wavelets_repo/
 .idea/
+
+nul
+nul.*
+
