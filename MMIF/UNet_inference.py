@@ -29,27 +29,30 @@ low_model.to(device)
 high_model = UNet(in_channels=high_in, out_channels=high_out)
 high_model.to(device)
 
-low_model_path = r"C:\Users\12wkd\Desktop\exp_result\1217\exp1_bootom30\low\best_model.pth"
-high_model_path = r"C:\Users\12wkd\Desktop\exp_result\1217\exp1_bootom30\high\best_model.pth"
+low_model_path = r"C:\Users\12wkd\Desktop\exp_result\1217\exp2_top30\low\best_model.pth"
+high_model_path = r"C:\Users\12wkd\Desktop\exp_result\1217\exp2_top30\high\best_model.pth"
 
 low_model.eval()
 checkpoint1 = torch.load(low_model_path, map_location=device)
 low_model.load_state_dict(checkpoint1)
 low_model.eval()
-print('low pretrained loaded')
+# print('low pretrained loaded')
 
 high_model.eval()
 checkpoint2 = torch.load(high_model_path, map_location=device)
 high_model.load_state_dict(checkpoint2)
 high_model.eval()
-print('high pretrained loaded')
+# print('high pretrained loaded')
 
+# img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\LLVIP\visible\test\230431.jpg"
+img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\LLVIP\infrared\test\230431.jpg"
 
-img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\val\infrared\00025N.png"
+# img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\val\visible\00025N.png" #visible
+# img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\val\infrared\00025N.png" #infra
 x_visible = ex_data(root_dir=img_path)
 
 print(x_visible.shape)
-xfm = DWTForward(J=1, mode="periodization", wave='haar').to(device)  # Accepts all wave types available to PyWavelets
+xfm = DWTForward(J=1, mode="periodization", wave='haar').to(device)
 ifm = DWTInverse(mode="periodization", wave='haar').to(device)
 
 low_visible, high_visible = xfm(x_visible)
@@ -72,7 +75,7 @@ LH = high_output[:, 0:1, :, :]
 HL = high_output[:, 1:2, :, :]
 HH = high_output[:, 2:3, :, :]
 ll = low_output.to(device)
-highs = [torch.stack([LH, HL, HH], dim=2).to(device)]  # => (B, 1, 3, H, W) 형태로 전달됨
+highs = [torch.stack([LH, HL, HH], dim=2).to(device)]  # => (B, 1, 3, H, W)
 
 inverse = ifm((ll, highs))
 
@@ -90,6 +93,13 @@ high_output_img = (high_output_img * 255).astype(np.uint8)
 
 
 # 결과 시각화
+save_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\results"
+cv2.imwrite(f"{save_path}/total_output.png", inv_img)
+cv2.imwrite(f"{save_path}/low_output.png", low_output_img)
+cv2.imwrite(f"{save_path}/high_output_LH.png", high_output_img[0, :, :])
+cv2.imwrite(f"{save_path}/high_output_HL.png", high_output_img[1, :, :])
+cv2.imwrite(f"{save_path}/high_output_HH.png", high_output_img[2, :, :])
+
 cv2.imshow("Reconstructed", inv_img)
 cv2.imshow("Low Reconstruction", low_output_img)
 cv2.imshow("LH Reconstruction", high_output_img[0,:,:])
@@ -98,12 +108,7 @@ cv2.imshow("HH Reconstruction", high_output_img[2,:,:])
 cv2.waitKey(0)
 cv2.destroyAllWindows()
 
-save_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\results"
-cv2.imwrite(f"{save_path}/total_output.png", inv_img)
-cv2.imwrite(f"{save_path}/low_output.png", low_output_img)
-cv2.imwrite(f"{save_path}/high_output_LH.png", high_output_img[0, :, :])
-cv2.imwrite(f"{save_path}/high_output_HL.png", high_output_img[1, :, :])
-cv2.imwrite(f"{save_path}/high_output_HH.png", high_output_img[2, :, :])
+
 
 
 # titles = ['Yl (Low freq)', 'Yh - LH', 'Yh - HL', 'Yh - HH']

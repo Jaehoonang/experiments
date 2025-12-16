@@ -273,17 +273,25 @@ def train_MMunet(in_channels, out_channels, mode, data_path, num_epochs):
         train_loss = 0
 
         with tqdm(train_loader, desc=f"Epoch {epoch + 1}/{num_epochs}") as pbar:
-            for i, (masked, gt) in enumerate(pbar):
-                masked, gt = masked.to(device), gt.to(device)
+            for i, (inputs, mask, gt) in enumerate(pbar):
+                inputs, mask, gt = inputs.to(device), mask.to(device), gt.to(device)
 
-                #수정중
-                B, M, C, H, W = masked.size()
-                masked = masked.view(B*M, C, H, W)
-                gt = gt.view(B*M, C, H, W)
+                if mask.dim() == 3:
+                    mask = mask.unsqueeze(1)
+
+                B, M, C, H, W = inputs.size()
+
+                inputs = inputs.view(B * M, C, H, W)
+                gt = gt.view(B * M, C, H, W)
+                mask = mask.repeat_interleave(M, dim=0)
+                mask = mask.expand(-1, C, -1, -1)
 
                 optimizer.zero_grad()
-                outputs = model(masked)
-                loss = criterion(outputs, gt)
+                outputs = model(inputs)
+
+                pixel_loss = criterion(outputs, gt)
+                loss = (pixel_loss * mask).sum() / (mask.sum() + 1e-8)
+
                 loss.backward()
                 optimizer.step()
 
@@ -295,17 +303,27 @@ def train_MMunet(in_channels, out_channels, mode, data_path, num_epochs):
         model.eval()
         test_loss = 0
         with torch.no_grad():
-            for masked, gt in test_loader:
-                masked = masked.to(device)
+            for inputs, mask, gt in test_loader:
+
+                inputs = inputs.to(device)
+                mask = mask.to(device)
                 gt = gt.to(device)
 
-                B, M, C, H, W = masked.size()
+                if mask.dim() == 3:
+                    mask = mask.unsqueeze(1)
 
-                masked = masked.view(B * M, C, H, W)
+                B, M, C, H, W = inputs.size()
+
+                inputs = inputs.view(B * M, C, H, W)
                 gt = gt.view(B * M, C, H, W)
+                mask = mask.repeat_interleave(M, dim=0)
+                mask = mask.expand(-1, C, -1, -1)
 
-                outputs = model(masked)
-                loss = criterion(outputs, gt)
+                outputs = model(inputs)
+
+                pixel_loss = criterion(outputs, gt)
+                loss = (pixel_loss * mask).sum() / (mask.sum() + 1e-8)
+
                 test_loss += loss.item()
 
         avg_test_loss = test_loss / len(test_loader)
@@ -346,7 +364,7 @@ def train_bottom_MMunet(in_channels, out_channels, mode, data_path, num_epochs):
     train_loader = DataLoader(train_dataset, batch_size=20, shuffle=True)
     test_loader = DataLoader(test_dataset, shuffle=False)
 
-    criterion = nn.L1Loss()
+    criterion = nn.L1Loss(reduction='none')
 
     model = UNet(in_channels, out_channels).to(device)
     optimizer = optim.AdamW(model.parameters(), lr=1e-4)
@@ -360,16 +378,25 @@ def train_bottom_MMunet(in_channels, out_channels, mode, data_path, num_epochs):
         train_loss = 0
 
         with tqdm(train_loader, desc=f"Epoch {epoch + 1}/{num_epochs}") as pbar:
-            for i, (masked, gt) in enumerate(pbar):
-                masked, gt = masked.to(device), gt.to(device)
+            for i, (inputs, mask, gt) in enumerate(pbar):
+                inputs, mask, gt = inputs.to(device), mask.to(device), gt.to(device)
 
-                B, M, C, H, W = masked.size()
-                masked = masked.view(B*M, C, H, W)
+                if mask.dim() == 3:
+                    mask = mask.unsqueeze(1)
+
+                B, M, C, H, W = inputs.size()
+
+                inputs = inputs.view(B*M, C, H, W)
                 gt = gt.view(B*M, C, H, W)
+                mask = mask.repeat_interleave(M, dim=0)
+                mask = mask.expand(-1, C, -1, -1)
 
                 optimizer.zero_grad()
-                outputs = model(masked)
-                loss = criterion(outputs, gt)
+                outputs = model(inputs)
+
+                pixel_loss = criterion(outputs, gt)
+                loss = (pixel_loss * mask).sum() / (mask.sum() + 1e-8)
+
                 loss.backward()
                 optimizer.step()
 
@@ -381,17 +408,27 @@ def train_bottom_MMunet(in_channels, out_channels, mode, data_path, num_epochs):
         model.eval()
         test_loss = 0
         with torch.no_grad():
-            for masked, gt in test_loader:
-                masked = masked.to(device)
+            for inputs, mask, gt in test_loader:
+
+                inputs = inputs.to(device)
+                mask = mask.to(device)
                 gt = gt.to(device)
 
-                B, M, C, H, W = masked.size()
+                if mask.dim() == 3:
+                    mask = mask.unsqueeze(1)
 
-                masked = masked.view(B * M, C, H, W)
+                B, M, C, H, W = inputs.size()
+
+                inputs = inputs.view(B * M, C, H, W)
                 gt = gt.view(B * M, C, H, W)
+                mask = mask.repeat_interleave(M, dim=0)
+                mask = mask.expand(-1, C, -1, -1)
 
-                outputs = model(masked)
-                loss = criterion(outputs, gt)
+                outputs = model(inputs)
+
+                pixel_loss = criterion(outputs, gt)
+                loss = (pixel_loss * mask).sum() / (mask.sum() + 1e-8)
+
                 test_loss += loss.item()
 
         avg_test_loss = test_loss / len(test_loader)
@@ -446,17 +483,25 @@ def train_ano_MMunet(in_channels, out_channels, mode, data_path, num_epochs, ann
         train_loss = 0
 
         with tqdm(train_loader, desc=f"Epoch {epoch + 1}/{num_epochs}") as pbar:
-            for i, (masked, gt) in enumerate(pbar):
-                masked, gt = masked.to(device), gt.to(device)
+            for i, (inputs, mask, gt) in enumerate(pbar):
+                inputs, mask, gt = inputs.to(device), mask.to(device), gt.to(device)
 
-                #수정중
-                B, M, C, H, W = masked.size()
-                masked = masked.view(B*M, C, H, W)
-                gt = gt.view(B*M, C, H, W)
+                if mask.dim() == 3:
+                    mask = mask.unsqueeze(1)
+
+                B, M, C, H, W = inputs.size()
+
+                inputs = inputs.view(B * M, C, H, W)
+                gt = gt.view(B * M, C, H, W)
+                mask = mask.repeat_interleave(M, dim=0)
+                mask = mask.expand(-1, C, -1, -1)
 
                 optimizer.zero_grad()
-                outputs = model(masked)
-                loss = criterion(outputs, gt)
+                outputs = model(inputs)
+
+                pixel_loss = criterion(outputs, gt)
+                loss = (pixel_loss * mask).sum() / (mask.sum() + 1e-8)
+
                 loss.backward()
                 optimizer.step()
 
@@ -468,17 +513,27 @@ def train_ano_MMunet(in_channels, out_channels, mode, data_path, num_epochs, ann
         model.eval()
         test_loss = 0
         with torch.no_grad():
-            for masked, gt in test_loader:
-                masked = masked.to(device)
+            for inputs, mask, gt in test_loader:
+
+                inputs = inputs.to(device)
+                mask = mask.to(device)
                 gt = gt.to(device)
 
-                B, M, C, H, W = masked.size()
+                if mask.dim() == 3:
+                    mask = mask.unsqueeze(1)
 
-                masked = masked.view(B * M, C, H, W)
+                B, M, C, H, W = inputs.size()
+
+                inputs = inputs.view(B * M, C, H, W)
                 gt = gt.view(B * M, C, H, W)
+                mask = mask.repeat_interleave(M, dim=0)
+                mask = mask.expand(-1, C, -1, -1)
 
-                outputs = model(masked)
-                loss = criterion(outputs, gt)
+                outputs = model(inputs)
+
+                pixel_loss = criterion(outputs, gt)
+                loss = (pixel_loss * mask).sum() / (mask.sum() + 1e-8)
+
                 test_loss += loss.item()
 
         avg_test_loss = test_loss / len(test_loader)
@@ -533,16 +588,25 @@ def train_wieght_ano_MMunet(in_channels, out_channels, mode, data_path, num_epoc
         train_loss = 0
 
         with tqdm(train_loader, desc=f"Epoch {epoch + 1}/{num_epochs}") as pbar:
-            for i, (masked, gt) in enumerate(pbar):
-                masked, gt = masked.to(device), gt.to(device)
+            for i, (inputs, mask, gt) in enumerate(pbar):
+                inputs, mask, gt = inputs.to(device), mask.to(device), gt.to(device)
 
-                B, M, C, H, W = masked.size()
-                masked = masked.view(B*M, C, H, W)
-                gt = gt.view(B*M, C, H, W)
+                if mask.dim() == 3:
+                    mask = mask.unsqueeze(1)
+
+                B, M, C, H, W = inputs.size()
+
+                inputs = inputs.view(B * M, C, H, W)
+                gt = gt.view(B * M, C, H, W)
+                mask = mask.repeat_interleave(M, dim=0)
+                mask = mask.expand(-1, C, -1, -1)
 
                 optimizer.zero_grad()
-                outputs = model(masked)
-                loss = criterion(outputs, gt)
+                outputs = model(inputs)
+
+                pixel_loss = criterion(outputs, gt)
+                loss = (pixel_loss * mask).sum() / (mask.sum() + 1e-8)
+
                 loss.backward()
                 optimizer.step()
 
@@ -554,17 +618,27 @@ def train_wieght_ano_MMunet(in_channels, out_channels, mode, data_path, num_epoc
         model.eval()
         test_loss = 0
         with torch.no_grad():
-            for masked, gt in test_loader:
-                masked = masked.to(device)
+            for inputs, mask, gt in test_loader:
+
+                inputs = inputs.to(device)
+                mask = mask.to(device)
                 gt = gt.to(device)
 
-                B, M, C, H, W = masked.size()
+                if mask.dim() == 3:
+                    mask = mask.unsqueeze(1)
 
-                masked = masked.view(B * M, C, H, W)
+                B, M, C, H, W = inputs.size()
+
+                inputs = inputs.view(B * M, C, H, W)
                 gt = gt.view(B * M, C, H, W)
+                mask = mask.repeat_interleave(M, dim=0)
+                mask = mask.expand(-1, C, -1, -1)
 
-                outputs = model(masked)
-                loss = criterion(outputs, gt)
+                outputs = model(inputs)
+
+                pixel_loss = criterion(outputs, gt)
+                loss = (pixel_loss * mask).sum() / (mask.sum() + 1e-8)
+
                 test_loss += loss.item()
 
         avg_test_loss = test_loss / len(test_loader)
@@ -592,7 +666,7 @@ if __name__ == '__main__':
     low_mode = 'low'
     high_mode = 'high'
 
-    num_epochs = 50
+    num_epochs = 30
     data_path = r'C:\Users\12wkd\Desktop\experiments\MMIF\onlytest'
     annotation_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\annotation"
     low_in = 1
@@ -604,18 +678,17 @@ if __name__ == '__main__':
     # high_unet = train_unet(in_channels=high_in, out_channels=high_out, mode='high', num_epochs=10, data_path=data_path)
 
     # difference bottom 30 masking (conducted)
+    # train_bottom_MMunet(in_channels=high_in, out_channels=high_out, mode='high', num_epochs=num_epochs,data_path=data_path)
     # train_bottom_MMunet(in_channels=low_in, out_channels=low_out, mode='low', num_epochs=num_epochs, data_path=data_path)
-    # train_bottom_MMunet(in_channels=high_in, out_channels=high_out, mode='high', num_epochs=num_epochs, data_path=data_path)
-
 
     # # difference top 30 masking (conducted)
     # train_MMunet(in_channels=low_in, out_channels=low_out, mode='low', num_epochs=num_epochs, data_path=data_path)
     # train_MMunet(in_channels=high_in, out_channels=high_out, mode='high', num_epochs=num_epochs, data_path=data_path)
 
     # # difference 30 + annotation
-    # train_ano_MMunet(in_channels=low_in, out_channels=low_out, mode='low', num_epochs=num_epochs, data_path=data_path, annotation_path=annotation_path)
-    # train_ano_MMunet(in_channels=high_in, out_channels=high_out, mode='high', num_epochs=num_epochs, data_path=data_path, annotation_path=annotation_path)
+    train_ano_MMunet(in_channels=low_in, out_channels=low_out, mode='low', num_epochs=num_epochs, data_path=data_path, annotation_path=annotation_path)
+    train_ano_MMunet(in_channels=high_in, out_channels=high_out, mode='high', num_epochs=num_epochs, data_path=data_path, annotation_path=annotation_path)
 
     # # (difference + annotation_weight) top 30
-    train_wieght_ano_MMunet(in_channels=low_in, out_channels=low_out, mode='low', num_epochs=num_epochs, data_path=data_path, annotation_path=annotation_path)
-    train_wieght_ano_MMunet(in_channels=low_in, out_channels=low_out, mode='high', num_epochs=num_epochs, data_path=data_path, annotation_path=annotation_path)
+    # train_wieght_ano_MMunet(in_channels=high_in, out_channels=high_out, mode='high', num_epochs=num_epochs, data_path=data_path, annotation_path=annotation_path)
+    # train_wieght_ano_MMunet(in_channels=low_in, out_channels=low_out, mode='low', num_epochs=num_epochs, data_path=data_path, annotation_path=annotation_path)
