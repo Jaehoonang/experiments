@@ -72,12 +72,6 @@ if __name__=="__main__":
         diff = diff * mask
         difference_Yh.append(diff)
 
-
-
-
-
-
-
     # inverse = ifm((mask_yl, difference_Yh_mask))
     #
     # inverse_img = inverse.detach().cpu().numpy()
@@ -88,6 +82,7 @@ if __name__=="__main__":
     Yl_img = Yl_infrared.squeeze().detach().cpu().numpy()  # (H/2, W/2)
     Yh_img = Yh_infrared[0].squeeze().detach().cpu().numpy()  # (3, H/2, W/2)
 
+    print(Yh_img.shape)
     titles = ['Yl (Low freq)', 'Yh - LH', 'Yh - HL', 'Yh - HH']
 
     # --- 그리기 ---
