@@ -29,8 +29,8 @@ low_model.to(device)
 high_model = UNet(in_channels=high_in, out_channels=high_out)
 high_model.to(device)
 
-low_model_path = r"C:\Users\12wkd\Desktop\exp_result\1217\exp2_top30\low\best_model.pth"
-high_model_path = r"C:\Users\12wkd\Desktop\exp_result\1217\exp2_top30\high\best_model.pth"
+low_model_path = r"C:\Users\12wkd\Desktop\exp_result\1217\exp1_bottom30\low\best_model.pth"
+high_model_path = r"C:\Users\12wkd\Desktop\exp_result\1217\exp1_bottom30\high\best_model.pth"
 
 low_model.eval()
 checkpoint1 = torch.load(low_model_path, map_location=device)
@@ -45,9 +45,9 @@ high_model.eval()
 # print('high pretrained loaded')
 
 # img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\LLVIP\visible\test\230431.jpg"
-img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\LLVIP\infrared\test\230431.jpg"
+# img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\LLVIP\infrared\test\230431.jpg"
 
-# img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\val\visible\00025N.png" #visible
+img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\val\visible\00025N.png" #visible
 # img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\val\infrared\00025N.png" #infra
 x_visible = ex_data(root_dir=img_path)
 

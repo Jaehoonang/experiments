@@ -678,16 +678,16 @@ if __name__ == '__main__':
     # high_unet = train_unet(in_channels=high_in, out_channels=high_out, mode='high', num_epochs=10, data_path=data_path)
 
     # difference bottom 30 masking (conducted)
-    # train_bottom_MMunet(in_channels=high_in, out_channels=high_out, mode='high', num_epochs=num_epochs,data_path=data_path)
-    # train_bottom_MMunet(in_channels=low_in, out_channels=low_out, mode='low', num_epochs=num_epochs, data_path=data_path)
+    train_bottom_MMunet(in_channels=high_in, out_channels=high_out, mode='high', num_epochs=num_epochs,data_path=data_path)
+    train_bottom_MMunet(in_channels=low_in, out_channels=low_out, mode='low', num_epochs=num_epochs, data_path=data_path)
 
     # # difference top 30 masking (conducted)
     # train_MMunet(in_channels=low_in, out_channels=low_out, mode='low', num_epochs=num_epochs, data_path=data_path)
     # train_MMunet(in_channels=high_in, out_channels=high_out, mode='high', num_epochs=num_epochs, data_path=data_path)
 
     # # difference 30 + annotation
-    train_ano_MMunet(in_channels=low_in, out_channels=low_out, mode='low', num_epochs=num_epochs, data_path=data_path, annotation_path=annotation_path)
-    train_ano_MMunet(in_channels=high_in, out_channels=high_out, mode='high', num_epochs=num_epochs, data_path=data_path, annotation_path=annotation_path)
+    # train_ano_MMunet(in_channels=low_in, out_channels=low_out, mode='low', num_epochs=num_epochs, data_path=data_path, annotation_path=annotation_path)
+    # train_ano_MMunet(in_channels=high_in, out_channels=high_out, mode='high', num_epochs=num_epochs, data_path=data_path, annotation_path=annotation_path)
 
     # # (difference + annotation_weight) top 30
     # train_wieght_ano_MMunet(in_channels=high_in, out_channels=high_out, mode='high', num_epochs=num_epochs, data_path=data_path, annotation_path=annotation_path)

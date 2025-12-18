@@ -213,14 +213,14 @@ class MMDWT_UNet_Bottom_Dataset(Dataset):
         ll_values, ll_indices = torch.sort(difference_ll.view(-1))
         ll_k = int((self.mask_ratio) * len(ll_values))
         threshold = ll_values[ll_k]
-        ll_mask = (difference_ll <= threshold).float()
+        ll_mask = (difference_ll > threshold).float()
 
         high_mask = torch.zeros_like(difference_high)
         for c in range(difference_high.size(0)):
             vals = torch.sort(difference_high[c].view(-1))[0]
             k = int(self.mask_ratio * len(vals))
             threshold = vals[k]
-            high_mask[c] = (difference_high[c] <= threshold).float()
+            high_mask[c] = (difference_high[c] > threshold).float()
 
         # high_values, high_indices = torch.sort(difference_high.view(-1))
         # high_k = int((self.mask_ratio) * len(high_values))

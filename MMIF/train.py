@@ -92,12 +92,13 @@ if __name__=="__main__":
     high_img = difference_Yh.detach().cpu().squeeze().numpy()
     high_mask_np = high_mask.detach().cpu().squeeze().numpy()
 
-    boxes = pares_annotation(xml_path)
-    ann_mask = create_annotation_mask(difference_ll.shape[0], difference_ll.shape[1], boxes)
-    high_ann_mask = ann_mask.unsqueeze(0).expand_as(difference_high)
-
-    total_ll_mask = torch.clamp(ll_mask + ann_mask, max=1.0)
-    total_high_mask = torch.clamp(high_mask + high_ann_mask, max=1.0)
+    plt.figure(figsize=(5, 5))
+    plt.imshow(ll_img, cmap='gray')
+    plt.imshow(ll_mask_np, cmap='jet', alpha=0.4)
+    plt.colorbar(label='Top 30% Mask')
+    plt.title('Top 30% Low-frequency Regions')
+    plt.axis('off')
+    plt.show()
 
     # combined_high_mask = (high_mask.sum(dim=0) > 0).float()
     # plt.imshow(difference_Yl.cpu(), cmap='gray')
@@ -105,14 +106,17 @@ if __name__=="__main__":
     # plt.title('Bottom 30% High-frequency (Any Channel)')
     # plt.axis('off')
     # plt.show()
-    # freq_names = ['LH', 'HL', 'HH']
-    # for c in range(high_img.shape[0]):
-    #     plt.figure(figsize=(5, 5))
-    #     plt.imshow(high_img[c], cmap='gray')
-    #     plt.imshow(high_mask_np[c], cmap='jet', alpha=0.4)
-    #     plt.title(f'Top 30% High-frequency ({freq_names[c]})')
-    #     plt.axis('off')
-    #     plt.show()
+    #
+
+    freq_names = ['LH', 'HL', 'HH']
+
+    for c in range(high_img.shape[0]):
+        plt.figure(figsize=(5, 5))
+        plt.imshow(high_img[c], cmap='gray')
+        plt.imshow(high_mask_np[c], cmap='jet', alpha=0.4)
+        plt.title(f'Top 30% High-frequency ({freq_names[c]})')
+        plt.axis('off')
+        plt.show()
 
 
 
