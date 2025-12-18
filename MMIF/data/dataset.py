@@ -14,26 +14,3 @@ def ex_data(root_dir):
     X = trans(img).unsqueeze(0)
     print(X.shape)
     return X.to(device)
-
-
-
-class CustomDataset(Dataset):
-    def __init__(self, root_dir, image_size = 512):
-        self.root_dir = root_dir
-        self.image_paths = os.listdir(root_dir)
-        self.image_size = image_size
-
-
-
-    def __getitem__(self, index):
-        pass
-
-    def __len__(self):
-        return len(self.image_paths)
-
-
-
-
-
-
-

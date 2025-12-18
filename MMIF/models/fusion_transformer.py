@@ -1,12 +1,11 @@
 import torch
 import torch.nn as nn
-from torch import Tensor
 import torch.nn.functional as F
 
 from einops import rearrange, reduce, repeat
 from einops.layers.torch import Rearrange, Reduce
 
-
+###############################################################################
 # embedding module
 class Patch_Posi_embedding(nn.Module):
     def __init__(self, in_channels, img_size, emb_size, patch_size):
@@ -188,3 +187,4 @@ class ViTFlow(nn.Module):
 
         return modal1_out, modal2_out
 
+###############################################################################
