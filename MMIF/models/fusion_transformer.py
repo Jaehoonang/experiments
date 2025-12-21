@@ -46,21 +46,21 @@ class SelfAtt(nn.Module):
         # each modal ViT layer 원빵에 진행
         res1 = modal1
         QKV1 = self.weight1(self.norm1(modal1))
-        QKV1 = rearrange(QKV1, "b n (h d qkv) -> (qkv) b h n d", h=self.num_heads, QKV=3)
+        QKV1 = rearrange(QKV1, "b n (h d qkv) -> qkv b h n d", h=self.num_heads, qkv=3)
         queries1, keys1, values1 = QKV1[0], QKV1[1], QKV1[2]
 
         res2 = modal2
         QKV2 = self.weight2(self.norm2(modal2))
-        QKV2 = rearrange(QKV2, "b n (h d qkv) -> (qkv) b h n d", h=self.num_heads, QKV=3)
+        QKV2 = rearrange(QKV2, "b n (h d qkv) -> qkv b h n d", h=self.num_heads, qkv=3)
         queries2, keys2, values2 = QKV2[0], QKV2[1], QKV2[2]
 
         attention_score1 = torch.einsum('bhqd, bhkd -> bhqk', queries1, keys1) / self.scale
         attention_map1 = F.softmax(attention_score1, dim=-1)
-        attention_map1 = self.dropout(attention_map1)
+        attention_map1 = self.dropout1(attention_map1)
 
         attention_score2 = torch.einsum('bhqd, bhkd -> bhqk', queries2, keys2) / self.scale
         attention_map2 = F.softmax(attention_score2, dim=-1)
-        attention_map2 = self.dropout(attention_map2)
+        attention_map2 = self.dropout2(attention_map2)
 
         out1 = torch.einsum('bhal, bhlv -> bhav ', attention_map1, values1)
         out1 = rearrange(out1, "b h n d -> b n (h d)")
@@ -95,21 +95,21 @@ class CrossAtt(nn.Module):
         # each modal ViT layer 원빵에 진행
         res1 = modal1
         QKV1 = self.weight1(self.norm1(modal1))
-        QKV1 = rearrange(QKV1, "b n (h d qkv) -> (qkv) b h n d", h=self.num_heads, QKV=3)
+        QKV1 = rearrange(QKV1, "b n (h d qkv) -> qkv b h n d", h=self.num_heads, qkv=3)
         queries1, keys1, values1 = QKV1[0], QKV1[1], QKV1[2]
 
         res2 = modal2
         QKV2 = self.weight2(self.norm2(modal2))
-        QKV2 = rearrange(QKV2, "b n (h d qkv) -> (qkv) b h n d", h=self.num_heads, QKV=3)
+        QKV2 = rearrange(QKV2, "b n (h d qkv) -> qkv b h n d", h=self.num_heads, qkv=3)
         queries2, keys2, values2 = QKV2[0], QKV2[1], QKV2[2]
 
         attention_score1 = torch.einsum('bhqd, bhkd -> bhqk', queries2, keys1) / self.scale
         attention_map1 = F.softmax(attention_score1, dim=-1)
-        attention_map1 = self.dropout(attention_map1)
+        attention_map1 = self.dropout1(attention_map1)
 
         attention_score2 = torch.einsum('bhqd, bhkd -> bhqk', queries1, keys2) / self.scale
         attention_map2 = F.softmax(attention_score2, dim=-1)
-        attention_map2 = self.dropout(attention_map2)
+        attention_map2 = self.dropout2(attention_map2)
 
         out1 = torch.einsum('bhal, bhlv -> bhav ', attention_map1, values1)
         out1 = rearrange(out1, "b h n d -> b n (h d)")
