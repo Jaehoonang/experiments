@@ -5,6 +5,8 @@ import torch.nn.functional as F
 from einops import rearrange, reduce, repeat
 from einops.layers.torch import Rearrange, Reduce
 
+from MMIF.utils.cbam import CBAM
+import math
 ###############################################################################
 # embedding module
 class Patch_Posi_embedding(nn.Module):
@@ -104,10 +106,14 @@ class CrossAtt(nn.Module):
         queries2, keys2, values2 = QKV2[0], QKV2[1], QKV2[2]
 
         attention_score1 = torch.einsum('bhqd, bhkd -> bhqk', queries2, keys1) / self.scale
+        attention_score11 = torch.einsum('bhqd, bhkd -> bhqk', queries1, keys1) / self.scale
+        attention_score1 = attention_score1 + attention_score11
         attention_map1 = F.softmax(attention_score1, dim=-1)
         attention_map1 = self.dropout1(attention_map1)
 
         attention_score2 = torch.einsum('bhqd, bhkd -> bhqk', queries1, keys2) / self.scale
+        attention_score22 = torch.einsum('bhqd, bhkd -> bhqk', queries2, keys2) / self.scale
+        attention_score2 = attention_score2 + attention_score22
         attention_map2 = F.softmax(attention_score2, dim=-1)
         attention_map2 = self.dropout2(attention_map2)
 
@@ -148,9 +154,122 @@ class ResidualAdd(nn.Module):
         return x
 
 ###############################################################################
+# # fusion module
+class LinearDecoder(nn.Module):
+    def __init__(self, emb_size, out_channels, patch_size, img_size):
+        super().__init__()
+        self.lin_deco = nn.Linear(emb_size, patch_size * patch_size * out_channels)
+        self.rearrange = Rearrange('b (h w) (p1 p2 c) -> b c (h p1) (w p2)', h=img_size // patch_size,
+            w=img_size // patch_size, p1=patch_size, p2=patch_size, c=out_channels)
+
+
+    def forward(self, x):
+        x = self.lin_deco(x)
+        x = self.rearrange(x)
+
+        return x
+
+class FusionModule(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+
+
+    def forward(self, modal1, modal2):
+        pass
+
+# class TokenFusion(nn.Module):
+#     def __init__(self, emb_size):
+#         super().__init__()
+#         self.gate = nn.Sequential(nn.Linear(emb_size * 2, emb_size),
+#                                   nn.Sigmoid())
+#
+#     def forward(self, t1, t2):
+#         gate = self.gate(torch.cat([t1, t2], dim=-1))
+#         fused = gate * t1 + (1 - gate) * t2
+#         return fused
+#
+# class Image_decoder(nn.Module):
+#     def __init__(self):
+#         super().__init__()
+#         self.decoder = nn.Sequential(
+#             nn.Conv2d(256, 256, 3, padding=1),
+#             nn.ReLU(),
+#             nn.Upsample(scale_factor=2),
+#             nn.Conv2d(256, 128, 3, padding=1),
+#             nn.ReLU(),
+#             nn.Upsample(scale_factor=2),
+#             nn.Conv2d(128, 64, 3, padding=1),
+#             nn.ReLU(),
+#             nn.Upsample(scale_factor=2),
+#             nn.Conv2d(64, 32, 3, padding=1),
+#             nn.ReLU(),
+#             nn.Upsample(scale_factor=2),
+#             nn.Conv2d(32, 1, 1),
+#             nn.Sigmoid()
+#         )
+#
+#     def forward(self, x):
+#         return self.decoder(x)
+#
+# class PatchDeTokenizer(nn.Module):
+#     def __init__(self, emb_size, out_channels, patch_size):
+#         super().__init__()
+#         self.depatch = nn.ConvTranspose2d(
+#             emb_size,
+#             out_channels,
+#             kernel_size=patch_size,
+#             stride=patch_size
+#         )
+#
+#     def forward(self, x):
+#         # x: [B, 196, emb]
+#         B, N, D = x.shape
+#         H = W = int(N ** 0.5)
+#         x = x.transpose(1, 2).view(B, D, H, W)
+#         x = self.depatch(x)  # [B, out_channels, 224, 224]
+#         return x
+#
+# class Fusion_block(nn.Module):
+#     def __init__(self, emb_size, patch_size):
+#         super().__init__()
+#         self.tokenfusion = TokenFusion(emb_size)
+#         self.detoken = PatchDeTokenizer(emb_size=emb_size,out_channels=64,patch_size=patch_size)
+#
+#         self.refine = nn.Sequential(nn.Conv2d(64, 32, 3, padding=1),
+#             nn.ReLU(),
+#             nn.Conv2d(32, 1, 3, padding=1),
+#             nn.Sigmoid())
+#
+#         # self.token_proj = nn.Linear(emb_size, 256)
+#         # # self.cbam = CBAM(gate_channels=256)
+#         # self.decoder = Image_decoder()
+#
+#
+#     def forward(self, modal1_out, modal2_out):
+#         fused_token = self.tokenfusion(modal1_out, modal2_out)
+#         fused_img = self.detoken(fused_token)
+#         output = self.refine(fused_img)
+#         # fused_token = self.token_proj(fused_token)
+#         # fused = token_to_feature(fused_token)
+#         # fused = self.cbam(fused)
+#         # output = self.decoder(fused)
+#         output = torch.clamp(output, 0, 1)
+#
+#         return output
+#
+# def token_to_feature(x):
+#     # x: [B, 196, 768]
+#     B, N, D = x.shape
+#     H = W = int(math.sqrt(N))  # 14
+#     x = x.transpose(1, 2)  # [B, 768, 196]
+#     x = x.view(B, D, H, W)  # [B, 768, 14, 14]
+#     return x
+
+###############################################################################
 # ViT total flow
 class ViTFlow(nn.Module):
-    def __init__(self, in_channels, img_size, emb_size, patch_size, num_heads):
+    def __init__(self, in_channels, img_size, emb_size, patch_size, num_heads, out_channels):
         super(ViTFlow, self).__init__()
         self.embedding1 = Patch_Posi_embedding(in_channels, img_size, emb_size, patch_size)
         self.embedding2 = Patch_Posi_embedding(in_channels, img_size, emb_size, patch_size)
@@ -158,7 +277,9 @@ class ViTFlow(nn.Module):
         self.self_att1 = SelfAtt(emb_size, num_heads)
         self.cross_att2 = CrossAtt(emb_size, num_heads)
         self.cross_att3 = CrossAtt(emb_size, num_heads)
-        self.self_att4 = SelfAtt(emb_size, num_heads)
+        self.cross_att4 = CrossAtt(emb_size, num_heads)
+        self.self_att5 = SelfAtt(emb_size, num_heads)
+        self.self_att6 = SelfAtt(emb_size, num_heads)
 
         self.ffn1_1 = ResidualAdd(FFN(emb_size))
         self.ffn1_2 = ResidualAdd(FFN(emb_size))
@@ -168,12 +289,24 @@ class ViTFlow(nn.Module):
         self.ffn3_2 = ResidualAdd(FFN(emb_size))
         self.ffn4_1 = ResidualAdd(FFN(emb_size))
         self.ffn4_2 = ResidualAdd(FFN(emb_size))
+        self.ffn5_1 = ResidualAdd(FFN(emb_size))
+        self.ffn5_2 = ResidualAdd(FFN(emb_size))
+        self.ffn6_1 = ResidualAdd(FFN(emb_size))
+        self.ffn6_2 = ResidualAdd(FFN(emb_size))
+
+        self.lin_deco1 = LinearDecoder(emb_size, out_channels, patch_size, img_size)
+        self.lin_deco2 = LinearDecoder(emb_size, out_channels, patch_size, img_size)
+
+        # self.fusion = Fusion_block(emb_size, patch_size)
 
     def forward(self, modal1, modal2):
         modal1 = self.embedding1(modal1)
         modal2 = self.embedding2(modal2)
 
-        modal1_out, modal2_out = self.self_att1(modal1, modal2)
+        modal1_out, modal2_out = self.cross_att2(modal1, modal2)
+        modal1_out, modal2_out = self.ffn2_1(modal1_out), self.ffn2_2(modal2_out)
+
+        modal1_out, modal2_out = self.self_att1(modal1_out, modal2_out)
         modal1_out, modal2_out = self.ffn1_1(modal1_out), self.ffn1_2(modal2_out)
 
         modal1_out, modal2_out = self.cross_att2(modal1_out, modal2_out)
@@ -182,8 +315,19 @@ class ViTFlow(nn.Module):
         modal1_out, modal2_out = self.cross_att3(modal1_out, modal2_out)
         modal1_out, modal2_out = self.ffn3_1(modal1_out), self.ffn3_2(modal2_out)
 
-        modal1_out, modal2_out = self.self_att4(modal1_out, modal2_out)
+        modal1_out, modal2_out = self.cross_att4(modal1_out, modal2_out)
         modal1_out, modal2_out = self.ffn4_1(modal1_out), self.ffn4_2(modal2_out)
+
+        modal1_out, modal2_out = self.self_att5(modal1_out, modal2_out)
+        modal1_out, modal2_out = self.ffn5_1(modal1_out), self.ffn5_2(modal2_out)
+
+        modal1_out, modal2_out = self.self_att6(modal1_out, modal2_out)
+        modal1_out, modal2_out = self.ffn6_1(modal1_out), self.ffn6_2(modal2_out)
+
+        # modal1_out = self.lin_deco1(modal1_out)
+        # modal2_out = self.lin_deco2(modal2_out)
+
+        # output = self.fusion(modal1_out, modal2_out)
 
         return modal1_out, modal2_out
 

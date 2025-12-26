@@ -6,10 +6,9 @@ from PIL import Image
 
 
 class Fusiondataset(Dataset):
-    def __init__(self, modal1_dir, modal2_dir, device='cuda', transform=None):
+    def __init__(self, modal1_dir, modal2_dir, transform=None):
         self.modal1_dir = modal1_dir
         self.modal2_dir = modal2_dir
-        self.device = device
 
         self.modal1_images = sorted(self.modal1_dir.glob("*"))
         self.modal2_images = sorted(self.modal2_dir.glob("*"))
@@ -29,7 +28,5 @@ class Fusiondataset(Dataset):
             modal1_img = self.transform(modal1_img)
             modal2_img = self.transform(modal2_img)
 
-        modal1_img = modal1_img.to(self.device)
-        modal2_img = modal2_img.to(self.device)
-
         return modal1_img, modal2_img
+
