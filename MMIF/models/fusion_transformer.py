@@ -105,23 +105,24 @@ class CrossAtt(nn.Module):
         QKV2 = rearrange(QKV2, "b n (h d qkv) -> qkv b h n d", h=self.num_heads, qkv=3)
         queries2, keys2, values2 = QKV2[0], QKV2[1], QKV2[2]
 
-        attention_score1 = torch.einsum('bhqd, bhkd -> bhqk', queries2, keys1) / self.scale
-        attention_score11 = torch.einsum('bhqd, bhkd -> bhqk', queries1, keys1) / self.scale
-        attention_score1 = attention_score1 + attention_score11
+        attention_score1 = torch.einsum('bhqd, bhkd -> bhqk', queries1, keys2) / self.scale
+        # attention_score11 = torch.einsum('bhqd, bhkd -> bhqk', queries1, keys1) / self.scale
+        attention_score1 = attention_score1
         attention_map1 = F.softmax(attention_score1, dim=-1)
         attention_map1 = self.dropout1(attention_map1)
 
-        attention_score2 = torch.einsum('bhqd, bhkd -> bhqk', queries1, keys2) / self.scale
-        attention_score22 = torch.einsum('bhqd, bhkd -> bhqk', queries2, keys2) / self.scale
-        attention_score2 = attention_score2 + attention_score22
+        attention_score2 = torch.einsum('bhqd, bhkd -> bhqk', queries2, keys1) / self.scale
+        # attention_score22 = torch.einsum('bhqd, bhkd -> bhqk', queries2, keys2) / self.scale
+        attention_score2 = attention_score2
         attention_map2 = F.softmax(attention_score2, dim=-1)
         attention_map2 = self.dropout2(attention_map2)
+        # softmin 해보기!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-        out1 = torch.einsum('bhal, bhlv -> bhav ', attention_map1, values1)
+        out1 = torch.einsum('bhal, bhlv -> bhav ', attention_map1, values2)
         out1 = rearrange(out1, "b h n d -> b n (h d)")
         out1 = res1 + self.projection1(out1)
 
-        out2 = torch.einsum('bhal, bhlv -> bhav ', attention_map2, values2)
+        out2 = torch.einsum('bhal, bhlv -> bhav ', attention_map2, values1)
         out2 = rearrange(out2, "b h n d -> b n (h d)")
         out2 = res2 + self.projection2(out2)
 
@@ -275,7 +276,7 @@ class ViTFlow(nn.Module):
         self.embedding2 = Patch_Posi_embedding(in_channels, img_size, emb_size, patch_size)
 
         self.self_att1 = SelfAtt(emb_size, num_heads)
-        self.cross_att2 = CrossAtt(emb_size, num_heads)
+        self.self_att2 = SelfAtt(emb_size, num_heads)
         self.cross_att3 = CrossAtt(emb_size, num_heads)
         self.cross_att4 = CrossAtt(emb_size, num_heads)
         self.self_att5 = SelfAtt(emb_size, num_heads)
@@ -303,13 +304,10 @@ class ViTFlow(nn.Module):
         modal1 = self.embedding1(modal1)
         modal2 = self.embedding2(modal2)
 
-        modal1_out, modal2_out = self.cross_att2(modal1, modal2)
-        modal1_out, modal2_out = self.ffn2_1(modal1_out), self.ffn2_2(modal2_out)
-
-        modal1_out, modal2_out = self.self_att1(modal1_out, modal2_out)
+        modal1_out, modal2_out = self.self_att1(modal1, modal2)
         modal1_out, modal2_out = self.ffn1_1(modal1_out), self.ffn1_2(modal2_out)
 
-        modal1_out, modal2_out = self.cross_att2(modal1_out, modal2_out)
+        modal1_out, modal2_out = self.self_att2(modal1_out, modal2_out)
         modal1_out, modal2_out = self.ffn2_1(modal1_out), self.ffn2_2(modal2_out)
 
         modal1_out, modal2_out = self.cross_att3(modal1_out, modal2_out)
@@ -324,8 +322,26 @@ class ViTFlow(nn.Module):
         modal1_out, modal2_out = self.self_att6(modal1_out, modal2_out)
         modal1_out, modal2_out = self.ffn6_1(modal1_out), self.ffn6_2(modal2_out)
 
-        # modal1_out = self.lin_deco1(modal1_out)
-        # modal2_out = self.lin_deco2(modal2_out)
+        # modal1_out, modal2_out = self.self_att1(modal1_out, modal2_out)
+        # modal1_out, modal2_out = self.ffn1_1(modal1_out), self.ffn1_2(modal2_out)
+
+        # modal1_out, modal2_out = self.cross_att2(modal1_out, modal2_out)
+        # modal1_out, modal2_out = self.ffn2_1(modal1_out), self.ffn2_2(modal2_out)
+        #
+        # modal1_out, modal2_out = self.self_att5(modal1_out, modal2_out)
+        # modal1_out, modal2_out = self.ffn3_1(modal1_out), self.ffn3_2(modal2_out)
+
+        # modal1_out, modal2_out = self.cross_att4(modal1_out, modal2_out)
+        # modal1_out, modal2_out = self.ffn4_1(modal1_out), self.ffn4_2(modal2_out)
+
+        # modal1_out, modal2_out = self.self_att5(modal1_out, modal2_out)
+        # modal1_out, modal2_out = self.ffn5_1(modal1_out), self.ffn5_2(modal2_out)
+        #
+        # modal1_out, modal2_out = self.self_att6(modal1_out, modal2_out)
+        # modal1_out, modal2_out = self.ffn6_1(modal1_out), self.ffn6_2(modal2_out)
+
+        modal1_out = self.lin_deco1(modal1_out)
+        modal2_out = self.lin_deco2(modal2_out)
 
         # output = self.fusion(modal1_out, modal2_out)
 

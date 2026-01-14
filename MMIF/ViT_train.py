@@ -17,8 +17,8 @@ transform = transforms.Compose([
     transforms.ToTensor()
 ])
 
-dal1 = Path(r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\val\infrared")
-dal2 = Path(r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\val\visible")
+dal1 = Path(r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\train\infrared")
+dal2 = Path(r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\train\visible")
 
 dataset = Fusiondataset(modal1_dir=dal1, modal2_dir=dal2, transform=transform)
 dataloader = DataLoader(dataset, batch_size=20, shuffle=True)
@@ -60,7 +60,7 @@ def ssim(img1, img2, window_size=11, C1=0.01**2, C2=0.03**2):
 
     return ssim_map.mean()
 
-epochs = 500
+epochs = 50
 save_dir = "ViT_checkpoints"
 os.makedirs(save_dir, exist_ok=True)
 

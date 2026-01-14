@@ -1,19 +1,20 @@
 import torch
-from models.fusion_transformer import ViTFlow
+from models.CViT import CViTFlow
 from data.dataset import ex_data
 import numpy as np
 import cv2
+from PIL import Image
 import torchvision
 
-pt_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\ViT_checkpoints\best_representation_model.pth"
+pt_path = r"C:\Users\12wkd\Desktop\exp_result\0115\200_max\best_model_softmax_200epochs.pth"
 
+# 81, 97
 vis_img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\test\visible\010081.jpg"
 inf_img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\test\infrared\010081.jpg"
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-model = ViTFlow(in_channels=1, img_size=224, emb_size=768, patch_size=8, num_heads=12, out_channels=1)
-model.to(device)
+model = CViTFlow(in_channels=1, embed_dim=64, patch_size=8, num_heads=8, dim=64).to(device)
 
 model.eval()
 checkpoint1 = torch.load(pt_path, map_location=device)

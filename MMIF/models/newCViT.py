@@ -92,6 +92,8 @@ class AttentionConv(nn.Module):
 
         return x
 ################################################################################################################
+# M1, M2, M1+M2, 3 parallel CVT
+# M1, M2 is condition for summation of those two so output is just one feature
 class SelfConvAtt(nn.Module):
     def __init__(self, dim, num_heads, qkv_bias=False, kernel_size=3, padding_q=1, padding_kv=1, stride=1):
         super().__init__()
@@ -136,6 +138,25 @@ class SelfConvAtt(nn.Module):
                                     Rearrange('b c h w -> b (h w) c'))
 
         ################################################################################################################
+        self.conv_q_3 = nn.Sequential(nn.Conv2d(in_channels=dim, out_channels=dim, kernel_size=kernel_size,
+                                                padding=padding_q, stride=stride, bias=qkv_bias, groups=dim),
+                                      nn.BatchNorm2d(dim),
+                                      nn.Conv2d(in_channels=dim, out_channels=dim, kernel_size=1),
+                                      Rearrange('b c h w -> b (h w) c'))
+
+        self.conv_k_3 = nn.Sequential(nn.Conv2d(in_channels=dim, out_channels=dim, kernel_size=kernel_size,
+                                                padding=padding_kv, stride=stride, bias=qkv_bias, groups=dim),
+                                      nn.BatchNorm2d(dim),
+                                      nn.Conv2d(in_channels=dim, out_channels=dim, kernel_size=1),
+                                      Rearrange('b c h w -> b (h w) c'))
+
+        self.conv_v_3 = nn.Sequential(nn.Conv2d(in_channels=dim, out_channels=dim, kernel_size=kernel_size,
+                                                padding=padding_kv, stride=stride, bias=qkv_bias, groups=dim),
+                                      nn.BatchNorm2d(dim),
+                                      nn.Conv2d(in_channels=dim, out_channels=dim, kernel_size=1),
+                                      Rearrange('b c h w -> b (h w) c'))
+
+        ################################################################################################################
         self.linear_q1 = nn.Linear(dim, dim, bias=qkv_bias)
         self.linear_k1 = nn.Linear(dim, dim, bias=qkv_bias)
         self.linear_v1 = nn.Linear(dim, dim, bias=qkv_bias)
@@ -146,16 +167,21 @@ class SelfConvAtt(nn.Module):
         self.linear_v2 = nn.Linear(dim, dim, bias=qkv_bias)
 
         ################################################################################################################
+        self.linear_q3 = nn.Linear(dim, dim, bias=qkv_bias)
+        self.linear_k3 = nn.Linear(dim, dim, bias=qkv_bias)
+        self.linear_v3 = nn.Linear(dim, dim, bias=qkv_bias)
 
+        ################################################################################################################
 
     def forward(self, x1, h1, w1, x2, h2, w2):
         x1 = rearrange(x1, 'b (h w) c -> b c h w', h=h1, w=w1)
         x2 = rearrange(x2, 'b (h w) c -> b c h w', h=h2, w=w2)
+        x3 = x1 + x2
 
-        q1, q2 = self.conv_q_1(x1), self.conv_q_2(x2)
-        k1, k2 = self.conv_k_1(x1), self.conv_k_2(x2)
-        v1, v2 = self.conv_v_1(x1), self.conv_v_2(x2)
-
+        q1, q2, q3 = self.conv_q_1(x1), self.conv_q_2(x2), self.conv_q_3(x3)
+        k1, k2, k3 = self.conv_k_1(x1), self.conv_k_2(x2), self.conv_k_3(x3)
+        v1, v2, v3 = self.conv_v_1(x1), self.conv_v_2(x2), self.conv_v_3(x3)
+        ################################################################################################################
         q1 = rearrange(self.linear_q1(q1), 'b t (h d) -> b h t d', h=self.num_heads)
         k1 = rearrange(self.linear_k1(k1), 'b t (h d) -> b h t d', h=self.num_heads)
         v1 = rearrange(self.linear_v1(v1), 'b t (h d) -> b h t d', h=self.num_heads)
@@ -164,14 +190,23 @@ class SelfConvAtt(nn.Module):
         k2 = rearrange(self.linear_k2(k2), 'b t (h d) -> b h t d', h=self.num_heads)
         v2 = rearrange(self.linear_v2(v2), 'b t (h d) -> b h t d', h=self.num_heads)
 
+        q3 = rearrange(self.linear_q2(q3), 'b t (h d) -> b h t d', h=self.num_heads)
+        k3 = rearrange(self.linear_k2(k3), 'b t (h d) -> b h t d', h=self.num_heads)
+        v3 = rearrange(self.linear_v2(v3), 'b t (h d) -> b h t d', h=self.num_heads)
+
+        ################################################################################################################
         self_att_score1 = torch.einsum('bhlk, bhtk ->bhlt', [q1, k1]) * self.scale
         self_att_map1 = F.softmax(self_att_score1, dim=-1)
 
         self_att_score2 = torch.einsum('bhlk, bhtk ->bhlt', [q2, k2]) * self.scale
         self_att_map2 = F.softmax(self_att_score2, dim=-1)
 
+        self_att_score3 = torch.einsum('bhlk, bhtk ->bhlt', [q3, k3]) * self.scale
+        self_att_map3 = F.softmax(self_att_score3, dim=-1)
+
         x1 = torch.matmul(self_att_map1, v1)
         x2 = torch.matmul(self_att_map2, v2)
+        x3 = torch.matmul(self_att_map3, v3)
 
         batch_size, num_heads, seq_length, depth = x1.size()
         x1 = x1.view(batch_size, seq_length, num_heads * depth)
@@ -179,7 +214,10 @@ class SelfConvAtt(nn.Module):
         batch_size, num_heads, seq_length, depth = x2.size()
         x2 = x2.view(batch_size, seq_length, num_heads * depth)
 
-        return x1, x2
+        batch_size, num_heads, seq_length, depth = x3.size()
+        x3 = x3.view(batch_size, seq_length, num_heads * depth)
+
+        return x1, x2, x3
 
 class CrossConvAtt(nn.Module):
     def __init__(self, dim, num_heads, qkv_bias=False, kernel_size=3, padding_q=1, padding_kv=1, stride=1):

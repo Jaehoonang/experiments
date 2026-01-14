@@ -11,23 +11,24 @@ from data.fusiontransformer_data import Fusiondataset
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(device)
+
 transform = transforms.Compose([
     transforms.Grayscale(),
     transforms.Resize((224, 224)),
     transforms.ToTensor()
 ])
 
-dal1 = Path(r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\val\infrared")
-dal2 = Path(r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\val\visible")
+dal1 = Path(r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\train\infrared")
+dal2 = Path(r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\train\visible")
 
 dataset = Fusiondataset(modal1_dir=dal1, modal2_dir=dal2, transform=transform)
 dataloader = DataLoader(dataset, batch_size=20, shuffle=True)
 
-model = CViTFlow(in_channels=1, embed_dim=768, patch_size=8, num_heads=12, stride=7).to(device)
+model = CViTFlow(in_channels=1, embed_dim=64, patch_size=7, num_heads=8, dim=64).to(device)
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
 
-epochs = 500
-save_dir = "ViT_checkpoints"
+epochs = 200
+save_dir = "CVT_checkpoints"
 os.makedirs(save_dir, exist_ok=True)
 
 best_loss = float("inf")
@@ -43,9 +44,6 @@ for epoch in range(epochs):
         # print(modal1_img, modal2_img)
         optimizer.zero_grad()
 
-        with torch.no_grad():
-            modal1_in = model.embedding1(modal1_img)
-            modal2_in = model.embedding2(modal2_img)
 
         modal1_out, modal2_out = model(modal1_img, modal2_img)
         recon_loss = F.l1_loss(modal1_out, modal1_img) + F.l1_loss(modal2_out, modal2_img)
