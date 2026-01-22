@@ -96,7 +96,3 @@ class UNet(nn.Module):
 
         recon = self.outc(x)
         return recon
-
-
-
-

@@ -5,17 +5,21 @@ import cv2
 
 # x_visible = ex_data(root_dir = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\val\visible\00025N.png")
 # x_infra = ex_data(root_dir= r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\val\infrared\00025N.png")
-result1 = r"C:\Users\12wkd\Desktop\exp_result\0115\200_min\modal1_81_out_img.png"
-result2 = r"C:\Users\12wkd\Desktop\exp_result\0115\200_min\modal2_81_out_img.png"
+result1 = r"C:\Users\12wkd\Desktop\exp_result\0115\200_min\modal1_97_out_img.png"
+result2 = r"C:\Users\12wkd\Desktop\exp_result\0115\200_min\modal2_97_out_img.png"
+fused = r"C:\Users\12wkd\Desktop\exp_result\0115\3parallel_CVT\81_cross_out_img.png"
 
 x_visible = ex_data(root_dir = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\test\visible\010081.jpg")
 x_infra = ex_data(root_dir= r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\test\infrared\010081.jpg")
 
 res_visible = ex_data(root_dir=result1)
 res_infra = ex_data(root_dir=result2)
+fused = ex_data(root_dir=fused)
 ###########################################################
 visible_img = x_visible[0, 0].detach().cpu().numpy()
 infra_img = x_infra[0, 0].detach().cpu().numpy()
+fused_img = fused[0, 0].detach().cpu().numpy()
+
 
 infra_norm = cv2.normalize(infra_img, None, 0, 255, cv2.NORM_MINMAX)
 visible_norm = cv2.normalize(visible_img, None, 0, 255, cv2.NORM_MINMAX)
@@ -78,41 +82,51 @@ plt.imshow(infra_img, cmap='gray')
 plt.title('Infra')
 plt.axis('off')
 
+plt.subplot(1, 4, 3)
+plt.imshow(modal_sum, cmap='gray')
+plt.title('Summation(Vis+Inf)')
+plt.axis('off')
+
+plt.subplot(1, 4, 4)
+plt.imshow(fused_img, cmap='gray')
+plt.title('Fused')
+plt.axis('off')
+
 # plt.subplot(1, 5, 3)
 # plt.imshow(visible_img2, cmap='gray')
 # plt.title('Clahe Visible')
 # plt.axis('off')
 
-plt.subplot(1, 4, 3)
-plt.imshow(modal_sum, cmap='gray')
-plt.title('Modal Sum')
-plt.axis('off')
+# plt.subplot(1, 4, 3)
+# plt.imshow(modal_sum, cmap='gray')
+# plt.title('Modal Sum')
+# plt.axis('off')
+# #
+# plt.subplot(1, 4, 4)
+# plt.imshow(sum_img2, cmap='gray')
+# plt.title('Clahe Sum')
+# plt.axis('off')
+# ########################################################################
+# plt.figure(figsize=(15, 5))
+# plt.subplot(2, 4, 1)
+# plt.imshow(res_visible_img, cmap='gray')
+# plt.title('Visible')
+# plt.axis('off')
 #
-plt.subplot(1, 4, 4)
-plt.imshow(sum_img2, cmap='gray')
-plt.title('Clahe Sum')
-plt.axis('off')
-########################################################################
-plt.figure(figsize=(15, 5))
-plt.subplot(2, 4, 1)
-plt.imshow(res_visible_img, cmap='gray')
-plt.title('Visible')
-plt.axis('off')
-
-plt.subplot(2, 4, 2)
-plt.imshow(res_infra_img, cmap='gray')
-plt.title('Infra')
-plt.axis('off')
-
-plt.subplot(2, 4, 3)
-plt.imshow(res_modal_sum, cmap='gray')
-plt.title('Modal Sum')
-plt.axis('off')
+# plt.subplot(2, 4, 2)
+# plt.imshow(res_infra_img, cmap='gray')
+# plt.title('Infra')
+# plt.axis('off')
 #
-plt.subplot(2, 4, 4)
-plt.imshow(res_sum_img2, cmap='gray')
-plt.title('Clahe Sum')
-plt.axis('off')
+# plt.subplot(2, 4, 3)
+# plt.imshow(res_modal_sum, cmap='gray')
+# plt.title('Modal Sum')
+# plt.axis('off')
+# #
+# plt.subplot(2, 4, 4)
+# plt.imshow(res_sum_img2, cmap='gray')
+# plt.title('Clahe Sum')
+# plt.axis('off')
 
 plt.show()
 

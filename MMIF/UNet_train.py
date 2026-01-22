@@ -245,7 +245,7 @@ def train_MMunet(in_channels, out_channels, mode, data_path, num_epochs):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f'current device : {device}')
 
-    image_size = 512
+    image_size = 512 # or 224
     transform = transforms.Compose([
         transforms.Grayscale(),
         transforms.Resize((image_size, image_size)),

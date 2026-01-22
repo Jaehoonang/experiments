@@ -5,3 +5,5 @@ pytorch_wavelets_repo/
 .idea/
 checkpoints/
 ViT_checkpoints/
+CVT_checkpoints/
+newCVT_checkpoints/
