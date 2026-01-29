@@ -174,8 +174,6 @@ class FusionModule(nn.Module):
     def __init__(self):
         super().__init__()
 
-
-
     def forward(self, modal1, modal2):
         pass
 

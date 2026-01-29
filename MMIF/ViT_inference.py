@@ -24,7 +24,7 @@ vis_image = ex_data(root_dir=vis_img_path)
 inf_image = ex_data(root_dir=inf_img_path)
 
 with torch.no_grad():
-    modal1_out, modal2_out = model(vis_image, inf_image)
+    modal1_out, modal2_out  = model(vis_image, inf_image)
 print(modal1_out.min(), modal1_out.max())
 print('modal1 representation', modal1_out.shape)
 print('modal2 representation', modal2_out.shape)
