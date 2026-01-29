@@ -10,7 +10,7 @@ from MMIF.utils.pos_emb import get_2d_sincos_pos_embed
 from MMIF.utils.misc import DiagonalGaussianDistribution
 
 ##########################   Total VMAE Flow  ####################################
-# <patch-emb + posi-emb(freeze)> - <encoder(ViT based x 6 + downsample + ViT based x 6) x 12 depth> ##
+      ## <patch-emb + posi-emb(freeze)> - <encoder(ViT x 12 depth> ##
 ################################ <(L diffusion)> #################################
 ##################### <decoder x 12 depth> - <unpatchify> - out ##################
 ##################################################################################
