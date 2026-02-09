@@ -17,8 +17,10 @@ from MMIF.utils.misc import DiagonalGaussianDistribution
 
 class VMAE(nn.Module):
     def __init__(self, in_channels=3, img_size=224, emb_dim=768, patch_size=16, num_heads=12, encoder_depth=12,
-                 decoder_embed_dim=512, decoder_num_head=16, latent_dim=32, decoder_depth=8):
+                 decoder_embed_dim=512, decoder_num_head=16, latent_dim=32, decoder_depth=8, masking=True):
         super().__init__()
+        self.masking = masking
+
         encoder_latent_dim = latent_dim
         decoder_latent_dim = latent_dim
         num_patches = (img_size // patch_size) ** 2
@@ -32,6 +34,21 @@ class VMAE(nn.Module):
 
         self.Encoder_blocks = nn.ModuleList()
         down_idx = encoder_depth // 2
+
+        # if self.masking:
+        #     blocks = []
+        #     downsize_time = encoder_depth // 2
+        #     for i in range(encoder_depth):
+        #         blocks.append(ViT_block(emb_dim, num_heads))
+        #         if i == downsize_time - 1:
+        #             print(f"Add downsizing block in {i}th layer in encoder.")
+        #             blocks.append(Downsample(emb_dim, emb_dim))
+        #     self.blocks = nn.ModuleList(blocks)
+        # else:
+        #     self.blocks = nn.ModuleList([
+        #         ViT_block(emb_dim, num_heads)
+        #         for i in range(encoder_depth)])
+
         for i in range(encoder_depth):
             self.Encoder_blocks.append(ViT_block(emb_dim, num_heads))
             # if i == down_idx - 1:
@@ -46,11 +63,29 @@ class VMAE(nn.Module):
         self.decoder_blocks = nn.ModuleList()
         up_idx = decoder_depth - (encoder_depth // 2)
 
+        # if self.masking:
+        #     decoder_num_patches = num_patches // 4
+        # else:
+        #     decoder_num_patches = num_patches
+        # self.decoder_pos_embed = nn.Parameter(
+        #     torch.zeros(1, decoder_num_patches + self.num_extra_tokens, decoder_embed_dim), requires_grad=False)
+        #
+        # if self.masking:
+        #     decoder_blocks = []
+        #     upsize_time = decoder_depth - downsize_time
+        #     for i in range(decoder_depth):
+        #         decoder_blocks.append(
+        #             ViT_block(decoder_embed_dim, decoder_num_head))
+        #         if i == upsize_time - 1:
+        #             decoder_blocks.append(Upsample(decoder_embed_dim, decoder_embed_dim))
+        #     self.decoder_blocks = nn.ModuleList(decoder_blocks)
+        # else:
+        #     self.decoder_blocks = nn.ModuleList([
+        #         ViT_block(decoder_embed_dim, decoder_num_head)
+        #         for i in range(decoder_depth)])
+
         for i in range(decoder_depth):
             self.decoder_blocks.append(ViT_block(decoder_embed_dim, decoder_num_head))
-            # if i == up_idx - 1:
-            #     self.decoder_blocks.append(Upsample(decoder_embed_dim, decoder_embed_dim))
-
 
         self.decoder_norm = nn.LayerNorm(decoder_embed_dim)
         self.Decoder_pred = conv_decoder_pred(decoder_embed_dim, patch_size, in_channels, pred_with_conv=True)
@@ -95,7 +130,7 @@ class VMAE(nn.Module):
         x = self.Patch_Posi(x)
 
         score = compute_focus_score(image1, image2, patch_size=self.Patch_Posi.patch_size)
-        mask, ids_keep, ids_mask, ids_restore = focus_mask(score, mask_ratio=0.25)
+        mask, ids_keep, ids_mask, ids_restore = focus_mask(score, mask_ratio=0.01)
 
         x = apply_focus_mask(x, ids_keep)
         for blk in self.Encoder_blocks:
@@ -378,3 +413,6 @@ def apply_focus_mask_with_token(x, mask, mask_token):
     mask = mask.unsqueeze(-1)
     return x * (1.0 - mask) + mask * mask_token
 
+
+#############################################################################################################
+# decoder for reconstruction prof

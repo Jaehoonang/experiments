@@ -6,11 +6,11 @@ from tqdm import tqdm
 import os
 from pathlib import Path
 
+from models.CVT_VMAE import CVT_VMAE
+from data.fusiontransformer_data import Fusiondataset
+from utils.loss import GradientLoss
 from torchvision.models import VGG19_Weights, vgg19
 
-from data.VMAE_data import VMAE_Dataset
-from models.VMAE import VMAE
-from utils.loss import GradientLoss
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"현재 사용 중인 device {device}")
@@ -24,11 +24,12 @@ transform = transforms.Compose([
 dal1 = Path(r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\train\infrared")
 dal2 = Path(r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\train\visible")
 
-dataset= VMAE_Dataset(modal1_dir=dal1, modal2_dir=dal2, transform=transform)
+dataset = Fusiondataset(modal1_dir=dal1, modal2_dir=dal2, transform=transform)
 dataloader = DataLoader(dataset, batch_size=20, shuffle=True)
 
-model = VMAE(in_channels=1, patch_size=16).to(device)
+model = CVT_VMAE().to(device)
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+
 vgg = vgg19(weights=VGG19_Weights.IMAGENET1K_V1).features[:14].to(device)
 vgg.eval()
 def to_3ch(x):
@@ -41,8 +42,8 @@ def vgg_norm(x):
     return (x - mean) / std
 
 beta = 1e-4
-epochs = 1500
-save_dir = "VMAE_checkpoints"
+epochs = 2000
+save_dir = "CVT_VMAE_checkpoints"
 os.makedirs(save_dir, exist_ok=True)
 grad_loss_fn = GradientLoss()
 best_loss = float("inf")
@@ -58,22 +59,22 @@ for epoch in range(epochs):
 
         optimizer.zero_grad()
 
-        output, mask, posterior = model(modal1_img, modal2_img)
+        output, posterior = model(modal1_img, modal2_img)
         target = torch.max(modal1_img, modal2_img)
 
         # l2 loss with summation reconstruction
         # recon_loss = ((output - target) ** 2).mean(dim=(1, 2, 3))
         recon_loss = F.l1_loss(output, target)
         # recon_loss = (output - max(modal1_img, modal2_img)).mean(dim=(1, 2, 3))
-        focus_weight = mask.float().mean(dim=1)
-        recon_loss = (recon_loss * (1 + focus_weight)).mean()
 
+        # perceptual loss
         with torch.no_grad():
             target_feat = vgg(vgg_norm(to_3ch(torch.max(modal1_img, modal2_img))))
 
         output_feat = vgg(vgg_norm(to_3ch(output)))
         perceptual_loss = F.l1_loss(output_feat, target_feat)
 
+        # gradient loss
         grad_loss = grad_loss_fn(output, modal1_img, modal2_img)
 
         # KL loss
@@ -90,10 +91,11 @@ for epoch in range(epochs):
         optimizer.step()
 
         epoch_loss += loss.item()
-        epoch_bar.set_postfix(loss=f"{loss.item():.4f}", recon=f"{recon_loss.item():.4f}", percepual=f"{perceptual_loss.item():.4f}", KL=f"{kl_loss.item():.4f}", grad=f"{grad_loss.item():.4f}")
+        epoch_bar.set_postfix(loss=f"{loss.item():.4f}", recon=f"{recon_loss.item():.4f}", percepual=f"{perceptual_loss.item():.4f}", KL=f"{kl_loss.item():.4f}", grad=f"{grad_loss.item():.4f}" )
+
     avg_loss = epoch_loss / len(dataloader)
 
-    tqdm.write(f"Epoch [{epoch + 1}/{epochs}] | Reconstruction Loss: {recon_loss:.4f} | Perceptual Loss: {perceptual_loss:.4f} | KL Loss: {kl_loss:.4f} | KL Loss: {grad_loss:.4f} | Avg Loss: {avg_loss:.4f}")
+    tqdm.write(f"Epoch [{epoch + 1}/{epochs}] | Reconstruction Loss: {recon_loss:.4f} | Perceptual Loss: {perceptual_loss:.4f} | KL Loss: {kl_loss:.4f} | Gradient Loss: {grad_loss:.4f} | Avg Loss: {avg_loss:.4f}")
 
     if avg_loss < best_loss:
         best_loss = avg_loss
@@ -105,4 +107,3 @@ for epoch in range(epochs):
         }, os.path.join(save_dir, f"best_representation_model.pth"))
 
         tqdm.write(f"Best model saved at {epoch + 1} epoch!")
-

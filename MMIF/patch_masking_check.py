@@ -47,32 +47,41 @@ if __name__ == "__main__":
     # image1 = torch.randn(3, 3, 224, 224)
     # image2 = torch.randn(3, 1, 224, 224)
 
-    patch_num = 14
-    image1_2, image2_2 = patch_devide(x_visible, x_infra, patch_num)
-    mask = focus_map(image1_2, image2_2)
-    print(mask)
-
-    b = 0
-    mask_img = mask[b].unsqueeze(0).unsqueeze(0)
-    mask_up = F.interpolate(mask_img,size=(224, 224),mode='nearest').squeeze().cpu().numpy()
-    img = x_visible[b, 0].cpu().numpy()
-    visible_img = x_visible[0, 0].detach().cpu().numpy()
-    infra_img = x_infra[0, 0].detach().cpu().numpy()
-
+    target = torch.max(x_visible, x_infra)
+    target_img = target[0, 0].detach().cpu().numpy()
     plt.figure(figsize=(15, 5))
-    plt.subplot(1, 3, 1)
-    plt.imshow(visible_img, cmap='gray')
-    plt.title('Visible')
-    plt.axis('off')
-
-    plt.subplot(1, 3, 2)
-    plt.imshow(infra_img, cmap='gray')
-    plt.title('Infrared')
-    plt.axis('off')
-
-    plt.subplot(1, 3, 3)
-    plt.imshow(img, cmap='gray')
-    plt.imshow(mask_up, cmap='jet', alpha=0.4)
-    plt.title("Focus Patch Map")
+    plt.imshow(target_img, cmap='gray')
     plt.axis('off')
     plt.show()
+
+
+
+    # patch_num = 14
+    # image1_2, image2_2 = patch_devide(x_visible, x_infra, patch_num)
+    # mask = focus_map(image1_2, image2_2)
+    # print(mask)
+    #
+    # b = 0
+    # mask_img = mask[b].unsqueeze(0).unsqueeze(0)
+    # mask_up = F.interpolate(mask_img,size=(224, 224),mode='nearest').squeeze().cpu().numpy()
+    # img = x_visible[b, 0].cpu().numpy()
+    # visible_img = x_visible[0, 0].detach().cpu().numpy()
+    # infra_img = x_infra[0, 0].detach().cpu().numpy()
+    #
+    # plt.figure(figsize=(15, 5))
+    # plt.subplot(1, 3, 1)
+    # plt.imshow(visible_img, cmap='gray')
+    # plt.title('Visible')
+    # plt.axis('off')
+    #
+    # plt.subplot(1, 3, 2)
+    # plt.imshow(infra_img, cmap='gray')
+    # plt.title('Infrared')
+    # plt.axis('off')
+    #
+    # plt.subplot(1, 3, 3)
+    # plt.imshow(img, cmap='gray')
+    # plt.imshow(mask_up, cmap='jet', alpha=0.4)
+    # plt.title("Focus Patch Map")
+    # plt.axis('off')
+    # plt.show()
