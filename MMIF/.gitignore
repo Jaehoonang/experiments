@@ -9,3 +9,5 @@ CVT_checkpoints/
 newCVT_checkpoints/
 VMAE_checkpoints
 CVT_VMAE_checkpoints
+LDM_checkpoints
+LDMAE_checkpoints

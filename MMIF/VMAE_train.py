@@ -29,6 +29,7 @@ dataloader = DataLoader(dataset, batch_size=20, shuffle=True)
 
 model = VMAE(in_channels=1, patch_size=16).to(device)
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+
 vgg = vgg19(weights=VGG19_Weights.IMAGENET1K_V1).features[:14].to(device)
 vgg.eval()
 def to_3ch(x):
@@ -41,7 +42,7 @@ def vgg_norm(x):
     return (x - mean) / std
 
 beta = 1e-4
-epochs = 1500
+epochs = 2000
 save_dir = "VMAE_checkpoints"
 os.makedirs(save_dir, exist_ok=True)
 grad_loss_fn = GradientLoss()
@@ -63,10 +64,34 @@ for epoch in range(epochs):
 
         # l2 loss with summation reconstruction
         # recon_loss = ((output - target) ** 2).mean(dim=(1, 2, 3))
-        recon_loss = F.l1_loss(output, target)
-        # recon_loss = (output - max(modal1_img, modal2_img)).mean(dim=(1, 2, 3))
+
+        # 가장 최신 recon_loss
+        #######################################
+        recon_loss = F.l1_loss(output, target, reduction='none')
+        recon = recon_loss.mean(dim=(1, 2, 3))  # [B]
         focus_weight = mask.float().mean(dim=1)
-        recon_loss = (recon_loss * (1 + focus_weight)).mean()
+        recon_loss = (recon * (1 + focus_weight)).mean()
+        #######################################
+
+        # gpt recons loss
+        patch_mask = mask  #
+        B, _, H, W = output.shape
+        p = model.module.Patch_Posi.patch_size
+        h = H // p
+        w = W // p
+        img_mask = patch_mask.reshape(B, h, w)
+        img_mask = img_mask.repeat_interleave(p, 1).repeat_interleave(p, 2)
+        img_mask = img_mask.unsqueeze(1)  # [B,1,H,W]
+        visible_mask = 1 - img_mask
+
+        recon = F.l1_loss(output, target, reduction='none')
+        recon_loss1 = (recon * img_mask).sum() / (img_mask.sum() + 1e-6)
+        recon_loss2 = (recon * visible_mask).sum() / (visible_mask.sum() + 1e-6)
+        # gpt recons loss
+
+        # recon_loss = (output - max(modal1_img, modal2_img)).mean(dim=(1, 2, 3))
+        # focus_weight = mask.float().mean(dim=1)
+        # recon_loss = (recon_loss * (1 + focus_weight)).mean()
 
         with torch.no_grad():
             target_feat = vgg(vgg_norm(to_3ch(torch.max(modal1_img, modal2_img))))
@@ -84,22 +109,25 @@ for epoch in range(epochs):
             1 + logvar - mu.pow(2) - logvar.exp()
         )
 
-        loss = recon_loss + perceptual_loss + beta*kl_loss + grad_loss
+        loss = recon_loss1 + recon_loss2 + perceptual_loss + beta * kl_loss + grad_loss
 
         loss.backward()
         optimizer.step()
 
         epoch_loss += loss.item()
-        epoch_bar.set_postfix(loss=f"{loss.item():.4f}", recon=f"{recon_loss.item():.4f}", percepual=f"{perceptual_loss.item():.4f}", KL=f"{kl_loss.item():.4f}", grad=f"{grad_loss.item():.4f}")
+        epoch_bar.set_postfix(loss=f"{loss.item():.4f}", recon1=f"{recon_loss1.item():.4f}",
+                              recon2=f"{recon_loss2.item():.4f}", percepual=f"{perceptual_loss.item():.4f}",
+                              KL=f"{kl_loss.item():.4f}", grad=f"{grad_loss.item():.4f}")
     avg_loss = epoch_loss / len(dataloader)
 
-    tqdm.write(f"Epoch [{epoch + 1}/{epochs}] | Reconstruction Loss: {recon_loss:.4f} | Perceptual Loss: {perceptual_loss:.4f} | KL Loss: {kl_loss:.4f} | KL Loss: {grad_loss:.4f} | Avg Loss: {avg_loss:.4f}")
+    tqdm.write(
+        f"Epoch [{epoch + 1}/{epochs}] | Reconstruction Loss1: {recon_loss1:.4f} | Reconstruction Loss2: {recon_loss2:.4f} |Perceptual Loss: {perceptual_loss:.4f} | KL Loss: {kl_loss:.4f} | grad Loss: {grad_loss:.4f} | Avg Loss: {avg_loss:.4f}")
 
     if avg_loss < best_loss:
         best_loss = avg_loss
         torch.save({
             "epoch": epoch + 1,
-            "model_state": model.state_dict(),
+            "model_state": model.module.state_dict(),
             "optimizer_state": optimizer.state_dict(),
             "loss": best_loss
         }, os.path.join(save_dir, f"best_representation_model.pth"))

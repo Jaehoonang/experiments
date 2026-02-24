@@ -6,7 +6,7 @@ import cv2
 import matplotlib.pyplot as plt
 
 
-pt_path = r"C:\Users\12wkd\Desktop\best_representation_model.pth"
+pt_path = r"C:\Users\12wkd\Desktop\best_stage1_vmae.pth"
 
 vis_img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\test\visible\010081.jpg"
 inf_img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\test\infrared\010081.jpg"

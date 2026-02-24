@@ -54,6 +54,8 @@ class VMAE(nn.Module):
             # if i == down_idx - 1:
             #     self.Encoder_blocks.append(Downsample(emb_dim, emb_dim))
 
+        self.attn_pool = nn.Linear(emb_dim, 1)
+
         self.to_latent = MLP_dim_resize(emb_dim, latent_dim*4, encoder_latent_dim*2)
         self.from_latent = MLP_dim_resize(decoder_latent_dim, latent_dim*4, emb_dim)
         self.z_to_decoder = nn.Linear(emb_dim, decoder_embed_dim)
@@ -91,6 +93,7 @@ class VMAE(nn.Module):
         self.Decoder_pred = conv_decoder_pred(decoder_embed_dim, patch_size, in_channels, pred_with_conv=True)
 
 
+
     def restore_with_mask_tokens(self, x_vis, ids_restore):
         B, N_vis, C = x_vis.shape
         N = ids_restore.shape[1]
@@ -126,18 +129,20 @@ class VMAE(nn.Module):
         return imgs
 
     def forward(self,image1, image2, sample_latent: bool = True, latent_scale: float = 1.0):
-        x = image1 + image2
+        x = torch.abs(image1) + torch.abs(image2)
         x = self.Patch_Posi(x)
 
         score = compute_focus_score(image1, image2, patch_size=self.Patch_Posi.patch_size)
-        mask, ids_keep, ids_mask, ids_restore = focus_mask(score, mask_ratio=0.01)
+        mask, ids_keep, ids_mask, ids_restore = focus_mask(score, mask_ratio=0.5)
 
         x = apply_focus_mask(x, ids_keep)
         for blk in self.Encoder_blocks:
             x = blk(x)
 
         x_vis = x
-        x_pooled = x_vis.mean(dim=1)
+        weights = self.attn_pool(x_vis)
+        weights = torch.softmax(weights, dim=1)
+        x_pooled = (x_vis * weights).sum(dim=1)
 
         latent = self.to_latent(x_pooled)
         posterior = DiagonalGaussianDistribution(latent)
@@ -147,30 +152,72 @@ class VMAE(nn.Module):
             z = posterior.sample()
             if latent_scale != 1.0:
                 z = posterior.mean + latent_scale * (z - posterior.mean)
+
         else:
             z = posterior.mean
 
+
+        # 기존 코드 흐ㄹ름
+        # z_dec = self.from_latent(z)
+        # z_dec = self.z_to_decoder(z_dec)
+        #
+        # x_vis = self.decoder_embed(x_vis)
+        #
+        # B = x_vis.shape[0]
+        # mask_tokens = self.mask_token.repeat(B, ids_mask.shape[1], 1)
+        #
+        # x = torch.cat([x_vis, mask_tokens], dim=1)
+        # x = torch.gather(
+        #     x, dim=1,
+        #     index=ids_restore.unsqueeze(-1).repeat(1, 1, x.shape[-1])
+        # )
+
+        ################ gpt의 한 수 ################
         z_dec = self.from_latent(z)
-        z_dec = self.z_to_decoder(z_dec)
+        z_token = self.z_to_decoder(z_dec).unsqueeze(1)  # [B,1,D]
 
         x_vis = self.decoder_embed(x_vis)
 
         B = x_vis.shape[0]
         mask_tokens = self.mask_token.repeat(B, ids_mask.shape[1], 1)
 
-        x = torch.cat([x_vis, mask_tokens], dim=1)
-        x = torch.gather(
-            x, dim=1,
-            index=ids_restore.unsqueeze(-1).repeat(1, 1, x.shape[-1])
+        # z 토큰을 visible 뒤에 붙임
+        x = torch.cat([x_vis, z_token, mask_tokens], dim=1)
+
+        z_tok = x[:, x_vis.shape[1]:x_vis.shape[1] + 1]
+        x_wo_z = torch.cat([x[:, :x_vis.shape[1]], x[:, x_vis.shape[1] + 1:]], dim=1)
+
+        # 원래 순서로 복원
+        x_wo_z = torch.gather(
+            x_wo_z,
+            dim=1,
+            index=ids_restore.unsqueeze(-1).repeat(1, 1, x_wo_z.shape[-1])
         )
 
-        x = x + z_dec.unsqueeze(1)
-        x = x + self.decoder_pos_embed
+        # 다시 앞에 붙임 (또는 뒤)
+        x = torch.cat([z_tok, x_wo_z], dim=1)
+
+        ################################################################
+
+
+        # gpt 한수 x -> 다시 넣어야됨
+        # x = x + z_dec.unsqueeze(1)
+        # x = x + self.decoder_pos_embed
+        #############################################
+        # gpt 한수 x -> 아래는 빼야됨
+        z_tok = x[:, :1, :]
+        patch_tok = x[:, 1:, :]
+
+        patch_tok = patch_tok + self.decoder_pos_embed
+
+        x = torch.cat([z_tok, patch_tok], dim=1)
 
         for blk in self.decoder_blocks:
             x = blk(x)
 
         x = self.decoder_norm(x)
+        # gpt 한수 x -> 아래는 빼야됨
+        x = x[:, 1:, :]
         x = self.Decoder_pred(x)
 
         x = self.unpatchify(x)
