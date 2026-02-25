@@ -130,9 +130,6 @@ import matplotlib.pyplot as plt
 
 @torch.no_grad()
 def p_sample(model, scheduler, x, t, t_index, cond):
-    """
-    모델의 예측값을 이용해 x_t에서 x_{t-1}을 계산 (Sampling 한 단계)
-    """
     # 1. 필요한 계수들 추출
     betas_t = scheduler.extract(scheduler.betas, t, x.shape)
     sqrt_one_minus_alphas_cumprod_t = scheduler.extract(
@@ -142,19 +139,14 @@ def p_sample(model, scheduler, x, t, t_index, cond):
         torch.sqrt(1.0 / scheduler.alphas), t, x.shape
     )
 
-    # 2. 모델이 노이즈 예측 (epsilon_theta)
     predicted_noise = model(x, t, cond)
 
-    # 3. x_{t-1}의 평균 계산 (DDPM 공식 11번)
-    # model_mean = 1/sqrt(alpha_t) * (x_t - (beta_t / sqrt(1-alpha_bar_t)) * epsilon_theta)
     model_mean = sqrt_recip_alphas_t * (
             x - betas_t * predicted_noise / sqrt_one_minus_alphas_cumprod_t
     )
     if t_index == 0:
         return model_mean
     else:
-        # 4. t > 0일 때 노이즈(sigma_t * z) 추가 (Langevin dynamics)
-        # DDPM 논문에 따라 sigma_t^2 = beta_t 로 설정하는 것이 일반적입니다.
 
         posterior_variance_t = scheduler.extract(scheduler.betas.to(device), t, x.shape)
         noise = torch.randn_like(x)

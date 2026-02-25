@@ -5,7 +5,6 @@ import numpy as np
 import cv2
 import matplotlib.pyplot as plt
 
-
 pt_path = r"C:\Users\12wkd\Desktop\best_representation_model.pth"
 
 vis_img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\test\visible\010081.jpg"

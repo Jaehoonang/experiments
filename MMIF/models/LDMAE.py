@@ -434,7 +434,6 @@ def apply_focus_mask_with_token(x, mask, mask_token):
     mask = mask.unsqueeze(-1)
     return x * (1.0 - mask) + mask * mask_token
 
-
 #############################################################################################################
 # diffusion Module
 
@@ -495,7 +494,6 @@ class SinusoidalPositionEmbeddings(nn.Module):
         embeddings = torch.cat((embeddings.sin(), embeddings.cos()), dim=-1)
         return embeddings
 
-
 class CrossAttention(nn.Module):
     def __init__(self, query_dim, context_dim=None, heads=8, dim_head=64):
         super().__init__()
@@ -532,9 +530,7 @@ class CrossAttention(nn.Module):
         out = rearrange(out, 'b h n d -> b n (h d)')
         return self.to_out(out)
 
-
 class SpatialCrossAttention(nn.Module):
-
     def __init__(self, channels, context_dim, heads=4, dim_head=32):
         super().__init__()
         self.norm = nn.GroupNorm(8, channels)
@@ -552,7 +548,6 @@ class SpatialCrossAttention(nn.Module):
         out = rearrange(out, 'b (h w) c -> b c h w', h=h, w=w)
 
         return residual + out
-
 
 class ResidualMLPBlock(nn.Module):
     def __init__(self, in_dim, time_emb_dim, cond_dim):
@@ -663,8 +658,6 @@ class SimpleUNetWithAttention(nn.Module):
         out_dim = 1
         time_emb_dim = 32
 
-        # [중요] Condition(Visible) 이미지의 차원
-        # Visible 이미지를 인코딩한 Feature의 채널 수 (여기선 간단히 이미지를 Flatten해서 쓴다고 가정하거나 별도 인코더 사용)
         self.context_dim = 128
 
         # Time embedding
@@ -755,8 +748,6 @@ class DiTBlock(nn.Module):
 
         h = self.norm1(x) * (1 + scale) + shift
         x = x + self.self_att(h)
-
         x = x + self.cross_att(self.norm2(x), cond)
-
         x = x + self.ffn(self.norm3(x))
         return x

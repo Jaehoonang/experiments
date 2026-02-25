@@ -168,7 +168,6 @@ def train_stage1_vmae(model, dataloader, epochs, device, save_dir, vgg, mean, st
 def train_stage2_diffusion(model, dataloader, epochs, device, save_dir, scheduler, stage1_weights_path):
     print("\n Starting Stage 2: Diffusion Transformer (DiT) Training...")
 
-    # 1. Stage 1에서 학습된 최고 성능의 가중치 불러오기
     if os.path.exists(stage1_weights_path):
         checkpoint = torch.load(stage1_weights_path, map_location=device)
         model.load_state_dict(checkpoint['model_state'], strict=False)
@@ -256,21 +255,21 @@ if __name__ == "__main__":
 
     save_dir = "LDMAE_checkpoints"
     os.makedirs(save_dir, exist_ok=True)
-
+    pre_model_path = r"C:\Users\12wkd\Desktop\best_stage1_vmae.pth"
     stage1_epochs = 3
     stage2_epochs = 300
 
-    stage1_weights = train_stage1_vmae(
-        model=model,
-        dataloader=dataloader,
-        epochs=stage1_epochs,
-        device=device,
-        save_dir=save_dir,
-        vgg=vgg,
-        mean=mean,
-        std=std,
-        grad_loss_fn=grad_loss_fn
-    )
+    # stage1_weights = train_stage1_vmae(
+    #     model=model,
+    #     dataloader=dataloader,
+    #     epochs=stage1_epochs,
+    #     device=device,
+    #     save_dir=save_dir,
+    #     vgg=vgg,
+    #     mean=mean,
+    #     std=std,
+    #     grad_loss_fn=grad_loss_fn
+    # )
 
     train_stage2_diffusion(
         model=model,
@@ -279,7 +278,7 @@ if __name__ == "__main__":
         device=device,
         save_dir=save_dir,
         scheduler=scheduler,
-        stage1_weights_path=stage1_weights
+        stage1_weights_path=pre_model_path
     )
 
     print("All training stages completed!")
