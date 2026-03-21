@@ -1,6 +1,7 @@
 import os
 from PIL import Image
 from torchvision import transforms
+from pytorch_wavelets import DWTForward, DWTInverse
 
 import torch
 import torch.utils
@@ -19,14 +20,59 @@ def ex_data1(root_dir):
 def ex_data2(root_dir):
     img = Image.open(root_dir).convert("L")
     #
-    trans = transform = transforms.Compose([
-        transforms.Grayscale(),            # 1채널로 변환
-        transforms.Resize((224, 224)),     # 크기 맞춤
-        transforms.ToTensor(),             # [0, 1]
-        transforms.Normalize(mean=[0.5], std=[0.5]) # [-1, 1]로 깔끔하게 매핑
+    trans = transforms.Compose([
+        transforms.Grayscale(),
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5], std=[0.5])
 ])
 
     X = trans(img)
     X = X.unsqueeze(0)
     # print(X.shape)
+    return X.to(device)
+
+def ex_data_dwt(root_dir):
+    img = Image.open(root_dir).convert("L")
+
+    trans = transforms.Compose([
+        transforms.Grayscale(),
+        transforms.Resize((224, 224)),
+        transforms.ToTensor()])
+
+    X = trans(img).to(device)
+    X = X.unsqueeze(0)
+    xfm = DWTForward(J=1, mode="periodization", wave='haar').to(device)
+    x_low, x_high = xfm(X)
+    x_low = x_low.to(device)
+
+    if isinstance(x_high, (list, tuple)):
+        x_high = [h.to(device) for h in x_high]
+    else:
+        x_high = x_high.to(device)
+
+    return x_low, x_high
+
+def ex_data3(root_dir):
+    img = Image.open(root_dir).convert("YCbCr")
+    trans = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5], std=[0.5])
+])
+
+    X = trans(img)
+    X = X.unsqueeze(0)
+    return X.to(device)
+
+def ex_data4(root_dir):
+    img = Image.open(root_dir).convert("RGB")
+    trans = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5], std=[0.5])
+])
+
+    X = trans(img)
+    X = X.unsqueeze(0)
     return X.to(device)

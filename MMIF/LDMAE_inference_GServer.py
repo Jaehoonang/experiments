@@ -1,5 +1,5 @@
 import torch
-from models.LDMAE import LDMAE, DiffusionScheduler, compute_focus_score, focus_mask, apply_focus_mask
+from models.LDMAE_GServer import LDMAE, DiffusionScheduler, compute_focus_score, focus_mask, apply_focus_mask, DiagonalGaussianDistribution
 from data.dataset import ex_data1
 import numpy as np
 import cv2
@@ -10,33 +10,55 @@ import matplotlib.pyplot as plt
 def get_noise_prediction(model, x, t, cond):
     t_emb = model.time_mlp(t)
 
-    z_diff = model.z_to_dit(x)
+    z_diff = model.z_to_dit(x).unsqueeze(1)
 
     for dit_blk in model.dit_blocks:
         z_diff = dit_blk(z_diff, t_emb, cond=cond)
 
+    z_diff = z_diff.squeeze(1)
     noise_pred = model.dit_to_noise(z_diff)
 
     return noise_pred
 
+# @torch.no_grad()
+# def p_sample(model, scheduler, x, t, t_index, cond):
+#     betas_t = scheduler.extract(scheduler.betas, t, x.shape)
+#     sqrt_one_minus_alphas_cumprod_t = scheduler.extract(scheduler.sqrt_one_minus_alphas_cumprod, t, x.shape)
+#     sqrt_recip_alphas_t = scheduler.extract(torch.sqrt(1.0 / scheduler.alphas), t, x.shape)
+#
+#     predicted_noise = get_noise_prediction(model, x, t, cond)
+#
+#     model_mean = sqrt_recip_alphas_t * (
+#             x - betas_t * predicted_noise / sqrt_one_minus_alphas_cumprod_t
+#     )
+#
+#     if t_index == 0:
+#         return model_mean
+#     else:
+#         posterior_variance_t = scheduler.extract(scheduler.betas, t, x.shape)
+#         noise = torch.randn_like(x)
+#         return model_mean + torch.sqrt(posterior_variance_t) * noise
+
 @torch.no_grad()
 def p_sample(model, scheduler, x, t, t_index, cond):
-    betas_t = scheduler.extract(scheduler.betas, t, x.shape)
-    sqrt_one_minus_alphas_cumprod_t = scheduler.extract(scheduler.sqrt_one_minus_alphas_cumprod, t, x.shape)
-    sqrt_recip_alphas_t = scheduler.extract(torch.sqrt(1.0 / scheduler.alphas), t, x.shape)
+    predicted_x0 = get_noise_prediction(model, x, t, cond)
 
-    predicted_noise = get_noise_prediction(model, x, t, cond)
-
-    model_mean = sqrt_recip_alphas_t * (
-            x - betas_t * predicted_noise / sqrt_one_minus_alphas_cumprod_t
-    )
+    # DDPM x0 prediction 공식 적용
+    alpha_bar_t = scheduler.extract(scheduler.alphas_cumprod, t, x.shape)
+    alpha_bar_t_prev = scheduler.extract(scheduler.alphas_cumprod, t, x.shape)
+    alpha_t = scheduler.extract(scheduler.alphas, t, x.shape)
+    beta_t = scheduler.extract(scheduler.betas, t, x.shape)
 
     if t_index == 0:
-        return model_mean
+        return predicted_x0
     else:
-        posterior_variance_t = scheduler.extract(scheduler.betas, t, x.shape)
+        posterior_mean = (
+            torch.sqrt(alpha_bar_t_prev) * beta_t / (1 - alpha_bar_t) * predicted_x0 +
+            torch.sqrt(alpha_t) * (1 - alpha_bar_t_prev) / (1 - alpha_bar_t) * x
+        )
+        posterior_variance_t = beta_t * (1 - alpha_bar_t_prev) / (1 - alpha_bar_t)
         noise = torch.randn_like(x)
-        return model_mean + torch.sqrt(posterior_variance_t) * noise
+        return posterior_mean + torch.sqrt(posterior_variance_t) * noise
 
 @torch.no_grad()
 def p_sample_loop(model, scheduler, shape, cond, device, save_interval=100):
@@ -54,35 +76,50 @@ def p_sample_loop(model, scheduler, shape, cond, device, save_interval=100):
 def decode_image(model, z, cond_feat, ids_restore, ids_mask):
     z_dec = model.from_latent(z)
 
-    B, N_vis, D = z_dec.shape
+    z_token = model.z_to_decoder(z_dec).unsqueeze(1)
+
+    B = z_token.shape[0]
+
+    x_vis_emb = model.decoder_embed(cond_feat)
+
     N_mask = ids_mask.shape[1]
     mask_tokens = model.mask_token.repeat(B, N_mask, 1)
 
-    x_concat = torch.cat([z_dec, mask_tokens], dim=1)
+    x_concat = torch.cat([x_vis_emb, z_token, mask_tokens], dim=1)
+
+    z_tok = x_concat[:, x_vis_emb.shape[1]: x_vis_emb.shape[1] + 1]
+    x_wo_z = torch.cat([x_concat[:, :x_vis_emb.shape[1]], x_concat[:, x_vis_emb.shape[1] + 1:]], dim=1)
 
     x_full = torch.gather(
-        x_concat,
+        x_wo_z,
         dim=1,
-        index=ids_restore.unsqueeze(-1).repeat(1, 1, x_concat.shape[-1])
+        index=ids_restore.unsqueeze(-1).repeat(1, 1, x_wo_z.shape[-1])
     )
 
-    x_full = x_full + model.decoder_pos_embed
+    x_full = torch.cat([z_tok, x_full], dim=1)
+
+    z_tok_final = x_full[:, :1, :]
+    patch_tok_final = x_full[:, 1:, :] + model.decoder_pos_embed
+    x_full = torch.cat([z_tok_final, patch_tok_final], dim=1)
 
     for blk in model.decoder_blocks:
         x_full = blk(x_full)
 
     x_full = model.decoder_norm(x_full)
 
+    x_full = x_full[:, 1:, :]
     x_out = model.Decoder_pred(x_full)
     x_out = model.unpatchify(x_out)
 
     return x_out
 
 def stage1():
-    vmae_pt_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\LDMAE_checkpoints\best_stage1_vmae.pth"
+    vmae_pt_path = r"C:\Users\12wkd\Desktop\best_stage1_vmae.pth"
     # 190001 210014 210016
     vis_img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\test\visible\010081.jpg"
     inf_img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\test\infrared\010081.jpg"
+    # vis_img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\val\visible\210014.jpg"
+    # inf_img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\val\infrared\210014.jpg"
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -99,9 +136,11 @@ def stage1():
     inf_image = ex_data1(root_dir=inf_img_path)
 
     with torch.no_grad():
-        x, mask, posterior = model(vis_image, inf_image)
+        x, mask, mu, logvar = model(vis_image, inf_image)
+        print(f"Latent Z (mu) std: {mu.std().item():.5f}")
+        print(f"Latent Z (mu) mean: {mu.mean().item():.5f}")
         for _ in range(20):
-            x, _, _ = model(vis_image, inf_image, sample_latent=True, latent_scale=30)
+            x, _, _, _ = model(vis_image, inf_image, sample_latent=True, latent_scale=30)
             samples.append(x.cpu())
 
     print(x.std(dim=1).mean())
@@ -146,6 +185,7 @@ def stage1():
     plt.show()
 
 def stage2():
+    vmae_pt_path = r"C:\Users\12wkd\Desktop\best_stage1_vmae.pth"
     ldm_pt_path = r"C:\Users\12wkd\Desktop\best_stage2_ldmae.pth"
     # 190001 210014 210016
     vis_img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\test\visible\010081.jpg"
@@ -156,11 +196,12 @@ def stage2():
     model = LDMAE(in_channels=1).to(device)
     scheduler = DiffusionScheduler(timesteps=1000, schedule_type='cosine')
 
+    checkpoint1 = torch.load(vmae_pt_path, map_location=device)
+    model.load_state_dict(checkpoint1['model_state'], strict=False)
+
     checkpoint2 = torch.load(ldm_pt_path, map_location=device)
     model.load_state_dict(checkpoint2['model_state'])
     model.eval()
-
-    samples = []
 
     vis_image = ex_data1(root_dir=vis_img_path)
     inf_image = ex_data1(root_dir=inf_img_path)
@@ -176,12 +217,17 @@ def stage2():
             cond_vis = blk(cond_vis)
 
         cond_feat = cond_vis
+        print(cond_feat.shape)
+        ##############################
 
         latent_dim = 32
-        N_visible = cond_feat.shape[1]
-        latent_shape = (vis_image.shape[0], N_visible, latent_dim)
+        latent_shape = (vis_image.shape[0], latent_dim)
+
 
         generated_z = p_sample_loop(model, scheduler, latent_shape, cond_feat, device)
+        print(f"Generated Z Shape: {generated_z.shape}")
+        print(f"Generated Z Range: {generated_z.min().item():.3f} ~ {generated_z.max().item():.3f}")
+
         fused_image = decode_image(model, generated_z, cond_feat, ids_restore, ids_mask)
 
     vis_np = vis_image.squeeze().cpu().numpy()
@@ -216,4 +262,3 @@ def stage2():
 
 if __name__ == '__main__':
     stage2()
-

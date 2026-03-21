@@ -11,3 +11,6 @@ VMAE_checkpoints
 CVT_VMAE_checkpoints
 LDM_checkpoints
 LDMAE_checkpoints
+LDMAE_DWT_checkpoints
+LDMAE_DWT_0312_checkpoints
+LDMAE_DWT_0319_checkpoints

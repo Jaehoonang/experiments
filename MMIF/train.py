@@ -2,7 +2,7 @@ import torch
 import numpy as np
 
 from pytorch_wavelets import DWTForward, DWTInverse
-from data.dataset import ex_data
+from data.dataset import ex_data1
 import matplotlib.pyplot as plt
 from torchvision import transforms
 
@@ -39,56 +39,56 @@ def create_annotation_mask(self, H, W, boxes):
 if __name__=="__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     # test
-    fused = ex_data(root_dir=r"C:\Users\12wkd\Desktop\exp_result\0115\3parallel_CVT\97_fused_out_300epochs_img.png")
-    xfm = DWTForward(J=1, mode="periodization", wave='haar').to(device)
-    ifm = DWTInverse(mode="periodization", wave='haar').to(device)
-
-    Yl_fused, Yh_fused = xfm(fused)
-
-    Yl_img = Yl_fused.squeeze().detach().cpu().numpy()  # (H/2, W/2)
-    Yh_img = Yh_fused[0].squeeze().detach().cpu().numpy()  # (3, H/2, W/2)
-
-    print(Yh_img.shape)
-    titles = ['Yl (Low freq)', 'Yh - LH', 'Yh - HL', 'Yh - HH']
-
-    # --- 그리기 ---
-    plt.figure(figsize=(14, 4))
-
-    # 1) Yl (저주파)
-    plt.subplot(1, 4, 1)
-    plt.imshow(Yl_img, cmap='gray')
-    plt.title(titles[0])
-    plt.axis('off')
-
-    # 2) Yh의 3 성분 (고주파)
-    for i in range(3):
-        plt.subplot(1, 4, i + 2)
-        plt.imshow(Yh_img[i], cmap='gray')
-        plt.title(titles[i + 1])
-        plt.axis('off')
-
-    plt.tight_layout()
-    plt.show()
-
-
-
-
-    # x_visible = ex_data(root_dir = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\val\visible\00025N.png")
-    # x_infra = ex_data(root_dir= r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\val\infrared\00025N.png")
-    #
+    # fused = ex_data1(root_dir=r"C:\Users\12wkd\Desktop\exp_result\0115\3parallel_CVT\97_fused_out_300epochs_img.png")
     # xfm = DWTForward(J=1, mode="periodization", wave='haar').to(device)
     # ifm = DWTInverse(mode="periodization", wave='haar').to(device)
     #
-    # # print(x_visible.shape)
-    # Yl_visible, Yh_visible = xfm(x_visible)
-    # # print('visible shape', Yl_visible.shape),
+    # Yl_fused, Yh_fused = xfm(fused)
     #
-    # Yl_infrared, Yh_infrared = xfm(x_infra)
-    # x= torch.concat([Yl_visible, Yl_infrared], dim=1)
-    # # print(x.shape)
+    # Yl_img = Yl_fused.squeeze().detach().cpu().numpy()  # (H/2, W/2)
+    # Yh_img = Yh_fused[0].squeeze().detach().cpu().numpy()  # (3, H/2, W/2)
     #
-    # # print(Yh_visible)
-    # difference_Yl = torch.abs(Yl_visible - Yl_infrared)
+    # print(Yh_img.shape)
+    # titles = ['Yl (Low freq)', 'Yh - LH', 'Yh - HL', 'Yh - HH']
+    #
+    # # --- 그리기 ---
+    # plt.figure(figsize=(14, 4))
+    #
+    # # 1) Yl (저주파)
+    # plt.subplot(1, 4, 1)
+    # plt.imshow(Yl_img, cmap='gray')
+    # plt.title(titles[0])
+    # plt.axis('off')
+    #
+    # # 2) Yh의 3 성분 (고주파)
+    # for i in range(3):
+    #     plt.subplot(1, 4, i + 2)
+    #     plt.imshow(Yh_img[i], cmap='gray')
+    #     plt.title(titles[i + 1])
+    #     plt.axis('off')
+    #
+    # plt.tight_layout()
+    # plt.show()
+
+
+
+
+
+    # difference_Yl# x_visible = ex_data(root_dir = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\val\visible\00025N.png")
+    #     # x_infra = ex_data(root_dir= r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\val\infrared\00025N.png")
+    #     #
+    #     # xfm = DWTForward(J=1, mode="periodization", wave='haar').to(device)
+    #     # ifm = DWTInverse(mode="periodization", wave='haar').to(device)
+    #     #
+    #     # # print(x_visible.shape)
+    #     # Yl_visible, Yh_visible = xfm(x_visible)
+    #     # # print('visible shape', Yl_visible.shape),
+    #     #
+    #     # Yl_infrared, Yh_infrared = xfm(x_infra)
+    #     # x= torch.concat([Yl_visible, Yl_infrared], dim=1)
+    #     # # print(x.shape)
+    #     #
+    #     # # print(Yh_visible) = torch.abs(Yl_visible - Yl_infrared)
     # # difference_Yh =[Yh_visible[i] - Yh_infrared[i] for i in range(len(Yh_visible))]
     # difference_Yh = torch.stack([torch.abs(Yh_visible[i] - Yh_infrared[i]) for i in range(len(Yh_visible))])
     #

@@ -1,96 +1,114 @@
-from data.dataset import ex_data
+from data.dataset import ex_data1, ex_data3, ex_data4
 import matplotlib.pyplot as plt
 import numpy as np
 import cv2
 
-# x_visible = ex_data(root_dir = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\val\visible\00025N.png")
-# x_infra = ex_data(root_dir= r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\val\infrared\00025N.png")
+# x_visible = ex_data1(root_dir = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\val\visible\00025N.png")
+# x_infra = ex_data1(root_dir= r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\val\infrared\00025N.png")
 result1 = r"C:\Users\12wkd\Desktop\exp_result\0115\200_min\modal1_97_out_img.png"
 result2 = r"C:\Users\12wkd\Desktop\exp_result\0115\200_min\modal2_97_out_img.png"
 fused = r"C:\Users\12wkd\Desktop\exp_result\0115\3parallel_CVT\81_cross_out_img.png"
 
-x_visible = ex_data(root_dir = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\test\visible\010081.jpg")
-x_infra = ex_data(root_dir= r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\test\infrared\010081.jpg")
+x_visible = ex_data1(root_dir=r"C:\Users\12wkd\Desktop\FMB\train\Visible\00080.png")
+x_infra = ex_data1(root_dir=r"C:\Users\12wkd\Desktop\FMB\train\Infrared\00080.png")
 
-res_visible = ex_data(root_dir=result1)
-res_infra = ex_data(root_dir=result2)
-fused = ex_data(root_dir=fused)
+x_visible_cbcr = ex_data3(root_dir=r"C:\Users\12wkd\Desktop\FMB\train\Visible\00080.png")
+x_infra_cbcr = ex_data3(root_dir=r"C:\Users\12wkd\Desktop\FMB\train\Infrared\00080.png")
+
+x_visible_rgb = ex_data4(root_dir=r"C:\Users\12wkd\Desktop\FMB\train\Visible\00080.png")
+x_infra_rgb = ex_data4(root_dir=r"C:\Users\12wkd\Desktop\FMB\train\Infrared\00080.png")
+
+# x_visible = ex_data1(root_dir=r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\test\visible\010081.jpg")
+# x_infra = ex_data1(root_dir=r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\test\infrared\010081.jpg")
+#
+# x_visible_cbcr = ex_data3(root_dir=r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\test\visible\010081.jpg")
+# x_infra_cbcr = ex_data3(root_dir=r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\test\infrared\010081.jpg")
+#
+# x_visible_rgb = ex_data4(root_dir=r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\test\visible\010081.jpg")
+# x_infra_rgb = ex_data4(root_dir=r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\test\infrared\010081.jpg")
+#
+# vis_img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\test\visible\010081.jpg"
+# inf_img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\test\infrared\010081.jpg"
+# # res_visible = ex_data1(root_dir=result1)
+# res_infra = ex_data1(root_dir=result2)
+# fused = ex_data1(root_dir=fused)
 ###########################################################
 visible_img = x_visible[0, 0].detach().cpu().numpy()
 infra_img = x_infra[0, 0].detach().cpu().numpy()
-fused_img = fused[0, 0].detach().cpu().numpy()
+# fused_img = fused[0, 0].detach().cpu().numpy()
 
 
-infra_norm = cv2.normalize(infra_img, None, 0, 255, cv2.NORM_MINMAX)
-visible_norm = cv2.normalize(visible_img, None, 0, 255, cv2.NORM_MINMAX)
+# infra_norm = cv2.normalize(infra_img, None, 0, 255, cv2.NORM_MINMAX)
+# visible_norm = cv2.normalize(visible_img, None, 0, 255, cv2.NORM_MINMAX)
 
-infra_uint8 = infra_norm.astype(np.uint8)
-visible_uint8 = visible_norm.astype(np.uint8)
+# infra_uint8 = infra_norm.astype(np.uint8)
+# visible_uint8 = visible_norm.astype(np.uint8)
 
-# CLAHE
-clahe1 = cv2.createCLAHE(clipLimit=0.5, tileGridSize=(8, 8))
-infra_img2 = clahe1.apply(infra_uint8)
-
-clahe2 = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
-visible_img2 = clahe2.apply(visible_uint8)
-
+# # CLAHE
+# clahe1 = cv2.createCLAHE(clipLimit=0.5, tileGridSize=(8, 8))
+# infra_img2 = clahe1.apply(infra_uint8)
+#
+# clahe2 = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
+# visible_img2 = clahe2.apply(visible_uint8)
+#
 modal_sum = visible_img + infra_img
-clahe_sum = visible_img2 + infra_img
-
-sum_norm = cv2.normalize(modal_sum, None, 0, 255, cv2.NORM_MINMAX)
-sum_uint8 = sum_norm.astype(np.uint8)
-clahe3= cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
-sum_img2 = clahe3.apply(sum_uint8)
-
-modal_minus = visible_img - infra_img
-###########################################################
-res_visible_img = res_visible[0, 0].detach().cpu().numpy()
-res_infra_img = res_infra[0, 0].detach().cpu().numpy()
-
-res_infra_norm = cv2.normalize(res_infra_img, None, 0, 255, cv2.NORM_MINMAX)
-res_visible_norm = cv2.normalize(res_visible_img, None, 0, 255, cv2.NORM_MINMAX)
-
-res_infra_uint8 = res_infra_norm.astype(np.uint8)
-res_visible_uint8 = res_visible_norm.astype(np.uint8)
-
-# CLAHE
-clahe1_1 = cv2.createCLAHE(clipLimit=0.5, tileGridSize=(8, 8))
-res_infra_img2 = clahe1_1.apply(res_infra_uint8)
-
-clahe2_1 = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
-res_visible_img2 = clahe2_1.apply(res_visible_uint8)
-
-res_modal_sum = res_visible_img + res_infra_img
-res_clahe_sum = res_visible_img2 + res_infra_img
-
-res_sum_norm = cv2.normalize(res_modal_sum, None, 0, 255, cv2.NORM_MINMAX)
-res_sum_uint8 = res_sum_norm.astype(np.uint8)
-clahe3_1= cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
-res_sum_img2 = clahe3_1.apply(res_sum_uint8)
-
-res_modal_minus = res_visible_img - res_infra_img
+modal_abs_sum = np.abs(visible_img) + np.abs(infra_img)
+# clahe_sum = visible_img2 + infra_img
+#
+# sum_norm = cv2.normalize(modal_sum, None, 0, 255, cv2.NORM_MINMAX)
+# sum_uint8 = sum_norm.astype(np.uint8)
+# clahe3= cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
+# sum_img2 = clahe3.apply(sum_uint8)
+#
+# modal_minus = visible_img - infra_img
+# ###########################################################
+# res_visible_img = res_visible[0, 0].detach().cpu().numpy()
+# res_infra_img = res_infra[0, 0].detach().cpu().numpy()
+#
+# res_infra_norm = cv2.normalize(res_infra_img, None, 0, 255, cv2.NORM_MINMAX)
+# res_visible_norm = cv2.normalize(res_visible_img, None, 0, 255, cv2.NORM_MINMAX)
+#
+# res_infra_uint8 = res_infra_norm.astype(np.uint8)
+# res_visible_uint8 = res_visible_norm.astype(np.uint8)
+#
+# # CLAHE
+# clahe1_1 = cv2.createCLAHE(clipLimit=0.5, tileGridSize=(8, 8))
+# res_infra_img2 = clahe1_1.apply(res_infra_uint8)
+#
+# clahe2_1 = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
+# res_visible_img2 = clahe2_1.apply(res_visible_uint8)
+#
+# res_modal_sum = res_visible_img + res_infra_img
+# res_clahe_sum = res_visible_img2 + res_infra_img
+#
+# res_sum_norm = cv2.normalize(res_modal_sum, None, 0, 255, cv2.NORM_MINMAX)
+# res_sum_uint8 = res_sum_norm.astype(np.uint8)
+# clahe3_1= cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
+# res_sum_img2 = clahe3_1.apply(res_sum_uint8)
+#
+# res_modal_minus = res_visible_img - res_infra_img
 
 # 모달 합친거
 plt.figure(figsize=(15, 5))
-plt.subplot(1, 4, 1)
+plt.subplot(1, 3, 1)
 plt.imshow(visible_img, cmap='gray')
 plt.title('Visible')
 plt.axis('off')
 
-plt.subplot(1, 4, 2)
+plt.subplot(1, 3, 2)
 plt.imshow(infra_img, cmap='gray')
 plt.title('Infra')
 plt.axis('off')
 
-plt.subplot(1, 4, 3)
-plt.imshow(modal_sum, cmap='gray')
+plt.subplot(1, 3, 3)
+plt.imshow(modal_abs_sum, cmap='gray')
 plt.title('Summation(Vis+Inf)')
 plt.axis('off')
 
-plt.subplot(1, 4, 4)
-plt.imshow(fused_img, cmap='gray')
-plt.title('Fused')
-plt.axis('off')
+# plt.subplot(1, 4, 4)
+# plt.imshow(fused_img, cmap='gray')
+# plt.title('Fused')
+# plt.axis('off')
 
 # plt.subplot(1, 5, 3)
 # plt.imshow(visible_img2, cmap='gray')
@@ -145,3 +163,65 @@ plt.show()
 # plt.title('Modal Minus')
 # plt.axis('off')
 # plt.show()
+vis_rgb_np = x_visible_rgb.squeeze(0).permute(1,2,0).cpu().numpy()
+
+vis_rgb_01 = np.clip((vis_rgb_np * 0.5) + 0.5, 0.0, 1.0)
+
+print(x_visible_cbcr.shape)
+y, cb, cr = x_visible_cbcr.split(1, dim=1)
+print(y.shape)
+
+plt.figure(figsize=(15, 5))
+plt.subplot(1, 5, 1)
+plt.imshow(vis_rgb_01)
+plt.title('Visible')
+plt.axis('off')
+
+plt.subplot(1, 5, 2)
+plt.imshow(visible_img, cmap='gray')
+plt.title('Visible gray scale')
+plt.axis('off')
+
+plt.subplot(1, 5, 3)
+plt.imshow(y.squeeze().cpu().numpy(), cmap='gray')
+plt.title('Visible Y')
+plt.axis('off')
+
+plt.subplot(1, 5, 4)
+plt.imshow(cb.squeeze().cpu().numpy(), cmap='viridis')
+plt.title('Visible Cb')
+plt.axis('off')
+
+plt.subplot(1, 5, 5)
+plt.imshow(cr.squeeze().cpu().numpy(), cmap='plasma')
+plt.title('Visible Cr')
+plt.axis('off')
+plt.show()
+##########################
+y_01 = (y.squeeze().cpu().numpy() * 0.5) + 0.5
+
+# 이제 공정한 비교가 가능해집니다.
+y_summation = y_01 + infra_img
+plt.figure(figsize=(15, 5))
+
+plt.subplot(1, 4, 1)
+plt.imshow(vis_rgb_01)
+plt.title('Visible')
+plt.axis('off')
+
+plt.subplot(1, 4, 2)
+plt.imshow(infra_img, cmap='gray')
+plt.title('Infra')
+plt.axis('off')
+
+plt.subplot(1, 4, 3)
+plt.imshow(y_summation, cmap='gray')
+plt.title('Visible_Y + Infra Summation')
+plt.axis('off')
+
+plt.subplot(1, 4, 4)
+plt.imshow(modal_sum, cmap='gray')
+plt.title('Both Gray_summation')
+plt.axis('off')
+
+plt.show()

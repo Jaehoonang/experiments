@@ -1,5 +1,5 @@
 import torch
-from models.LDMAE import LDMAE, DiffusionScheduler
+from models.LDMAE_GServer import LDMAE, DiffusionScheduler
 import numpy as np
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
@@ -138,7 +138,7 @@ def train_stage1_vmae(model, dataloader, epochs, device, save_dir, vgg, mean, st
             logvar = posterior.logvar
             kl_loss = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
 
-            loss = (2 * recon_loss1) + recon_loss2 + perceptual_loss + beta * kl_loss + grad_loss
+            loss = recon_loss1 + recon_loss2 + perceptual_loss + beta * kl_loss + grad_loss
 
             loss.backward()
             optimizer.step()
@@ -256,8 +256,8 @@ if __name__ == "__main__":
     save_dir = "LDMAE_checkpoints"
     os.makedirs(save_dir, exist_ok=True)
     pre_model_path = r"C:\Users\12wkd\Desktop\best_stage1_vmae.pth"
-    stage1_epochs = 1000
-    stage2_epochs = 500
+    stage1_epochs = 3
+    stage2_epochs = 300
 
     # stage1_weights = train_stage1_vmae(
     #     model=model,

@@ -1,10 +1,10 @@
+from pytorch_wavelets import DWTForward
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from einops import rearrange, reduce, einsum
 from einops.layers.torch import Rearrange
-from functools import partial
 
 import math
 import numpy as np
@@ -12,147 +12,94 @@ import numpy as np
 from MMIF.utils.pos_emb import get_2d_sincos_pos_embed
 from MMIF.utils.misc import DiagonalGaussianDistribution
 
-
 class LDMAE(nn.Module):
-    def __init__(self, in_channels=3, img_size=224, emb_dim=768, patch_size=16, num_heads=12, encoder_depth=12,
+    def __init__(self, in_channels=3, img_size=224, emb_dim=768, patch_size=4, num_heads=12, encoder_depth=12,
                  decoder_embed_dim=512, decoder_num_head=16, latent_dim=32, decoder_depth=8, dit_depth=4, masking=True):
         super().__init__()
 
-        # VMAE module
         self.masking = masking
-        encoder_latent_dim = latent_dim
-        decoder_latent_dim = latent_dim
         num_patches = (img_size // patch_size) ** 2
         grid_size = img_size // patch_size
 
         self.Patch_Posi = Patch_Posi_embedding(in_channels, img_size, emb_dim, patch_size)
         decoder_pos_embed = get_2d_sincos_pos_embed(decoder_embed_dim, grid_size, cls_token=False)
-        self.decoder_pos_embed = nn.Parameter(torch.from_numpy(decoder_pos_embed).float().unsqueeze(0), requires_grad=False)
+        self.decoder_pos_embed = nn.Parameter(torch.from_numpy(decoder_pos_embed).float().unsqueeze(0),
+                                              requires_grad=False)
 
         self.mask_token = nn.Parameter(torch.zeros(1, 1, decoder_embed_dim))
-        self.enc_mask_token = nn.Parameter(torch.zeros(1, 1, emb_dim))
 
-        self.Encoder_blocks = nn.ModuleList()
-        down_idx = encoder_depth // 2
-
-        for i in range(encoder_depth):
-            self.Encoder_blocks.append(ViT_block(emb_dim, num_heads))
-            # if i == down_idx - 1:
-            #     self.Encoder_blocks.append(Downsample(emb_dim, emb_dim))
-
-        self.attn_pool = nn.Linear(emb_dim, 1)
-
-        self.to_latent = MLP_dim_resize(emb_dim, latent_dim * 4, latent_dim * 2)
-        self.from_latent = MLP_dim_resize(latent_dim, latent_dim * 4, decoder_embed_dim)
-        self.latent_norm = nn.LayerNorm(latent_dim * 2)
-
-        time_emb_dim = 256
-        self.time_mlp = nn.Sequential(
-            SinusoidalPositionEmbeddings(time_emb_dim),
-            nn.Linear(time_emb_dim, time_emb_dim),
-            nn.SiLU(),
-            nn.Linear(time_emb_dim, time_emb_dim)
-        )
-        self.z_to_dit = nn.Linear(latent_dim, emb_dim)
-        self.dit_blocks = nn.ModuleList([
-            DiTBlock(emb_dim=emb_dim, num_heads=num_heads, time_emb_dim=time_emb_dim, cond_dim=emb_dim)
-            for _ in range(dit_depth)
+        self.Encoder_blocks = nn.ModuleList([
+            ViT_block(emb_dim, num_heads) for _ in range(encoder_depth)
         ])
 
-        self.z_to_decoder = nn.Linear(emb_dim, decoder_embed_dim)
+        self.enc_to_latent = nn.Linear(emb_dim, latent_dim * 2)
+        self.latent_to_dec = nn.Linear(latent_dim, decoder_embed_dim)
 
-        self.decoder_embed = nn.Linear(emb_dim, decoder_embed_dim)
+        self.pos_to_latent = nn.Linear(emb_dim, latent_dim)
+        nn.init.zeros_(self.pos_to_latent.weight)
+        nn.init.zeros_(self.pos_to_latent.bias)
 
-        self.decoder_blocks = nn.ModuleList()
-        up_idx = decoder_depth - (encoder_depth // 2)
-
-        for i in range(decoder_depth):
-            self.decoder_blocks.append(ViT_block(decoder_embed_dim, decoder_num_head))
+        self.decoder_blocks = nn.ModuleList([
+            ViT_block(decoder_embed_dim, decoder_num_head) for _ in range(decoder_depth)
+        ])
 
         self.decoder_norm = nn.LayerNorm(decoder_embed_dim)
-        self.Decoder_pred = conv_decoder_pred(decoder_embed_dim, patch_size, in_channels, pred_with_conv=True)
-        self.dit_to_noise = nn.Linear(emb_dim, latent_dim)
-
-    def restore_with_mask_tokens(self, x_vis, ids_restore):
-        B, N_vis, C = x_vis.shape
-        N = ids_restore.shape[1]
-
-        N_mask = N - N_vis
-        mask_tokens = self.mask_token.repeat(B, N_mask, 1)
-
-        x_ = torch.cat([x_vis, mask_tokens], dim=1)
-        x_ = torch.gather(
-            x_, dim=1,
-            index=ids_restore.unsqueeze(-1).repeat(1, 1, C)
-        )
-        return x_
+        self.Decoder_pred = conv_decoder_pred(decoder_embed_dim, patch_size, in_channels, pred_with_conv=False)
+        self.unet_model = StandardLDMUNet(in_channels=latent_dim)
+        self.cond_encoder_2d = nn.Sequential(
+            nn.Conv2d(in_channels, emb_dim // 2, kernel_size=3, stride=2, padding=1),
+            nn.SiLU(),
+            nn.Conv2d(emb_dim // 2, latent_dim, kernel_size=3, stride=2, padding=1),
+            nn.SiLU(),)
 
     def unpatchify(self, x):
         p = self.Patch_Posi.patch_size
-        if isinstance(p, tuple):
-            p = p[0]
-
+        if isinstance(p, tuple): p = p[0]
         B, N, D = x.shape
         h = w = int(N ** 0.5)
-        assert h * w == N, f"N={N} is not a square"
-
-        assert D % (p * p) == 0, \
-            f"Decoder_pred dim {D} not divisible by p*p={p * p}"
-
         C = D // (p * p)
-
         x = x.reshape(B, h, w, p, p, C)
         x = x.permute(0, 5, 1, 3, 2, 4).contiguous()
         imgs = x.reshape(B, C, h * p, w * p)
-
         return imgs
 
     def forward(self, image1, image2, timestep=None, sample_latent=True, latent_scale=1.0, stage=1, scheduler=None):
-        x = torch.abs(image1) + torch.abs(image2)
-        x = self.Patch_Posi(x)
+        if image1.ndim == 5:
+            image1 = rearrange(image1, 'b c d h w -> b (c d) h w')
+        if image2.ndim == 5:
+            image2 = rearrange(image2, 'b c d h w -> b (c d) h w')
 
-        score = compute_focus_score(image1, image2, patch_size=self.Patch_Posi.patch_size)
-        mask, ids_keep, ids_mask, ids_restore = focus_mask(score, mask_ratio=0.3)
+        x_sum = image1 + image2
 
-        x_vis = apply_focus_mask(x, ids_keep)
-        for blk in self.Encoder_blocks:
-            x_vis = blk(x_vis)
+        if x_sum.ndim == 5:
+            x_sum = rearrange(x_sum, 'b c d h w -> b (c d) h w')
+        x_patches = self.Patch_Posi(x_sum)
 
-        ######################
-        # weights = self.attn_pool(x_vis)
-        # weights = torch.softmax(weights, dim=1)
-        # x_pooled = (x_vis * weights).sum(dim=1)
-
-        latent = self.to_latent(x_vis)
-        posterior = DiagonalGaussianDistribution(latent)
-
-        if sample_latent:
-            z = posterior.sample()
-            if latent_scale != 1.0:
-                z = posterior.mean + latent_scale * (z - posterior.mean)
-        else:
-            z = posterior.mean
-
-        ########################################################
-        # STAGE 1 #
         if stage == 1:
-            z_dec = self.from_latent(z)
+            score = compute_focus_score(image1, image2, patch_size=self.Patch_Posi.patch_size)
+            mask, ids_keep, ids_mask, ids_restore = focus_mask(score, mask_ratio=0.25)
+            x_vis = apply_focus_mask(x_patches, ids_keep)
 
-            B, N_vis, D = z_dec.shape
+            for blk in self.Encoder_blocks:
+                x_vis = blk(x_vis)
+
+            latent_params = self.enc_to_latent(x_vis)
+            posterior = DiagonalGaussianDistribution(latent_params)
+
+            z = posterior.sample() if sample_latent else posterior.mean
+
+            z_dec = self.latent_to_dec(z)
+            B = z_dec.shape[0]
             N_mask = ids_mask.shape[1]
 
-            mask_tokens = self.mask_token.repeat(B, N_mask, 1)
-
-            x_concat = torch.cat([z_dec, mask_tokens], dim=1)
-
-            x_full = torch.gather(
-                x_concat,
-                dim=1,
-                index=ids_restore.unsqueeze(-1).repeat(1, 1, D)
-            )
+            if N_mask > 0:
+                mask_tokens = self.mask_token.repeat(B, N_mask, 1)
+                x_concat = torch.cat([z_dec, mask_tokens], dim=1)
+                x_full = torch.gather(x_concat, dim=1, index=ids_restore.unsqueeze(-1).repeat(1, 1, x_concat.shape[-1]))
+            else:
+                x_full = z_dec
 
             x_full = x_full + self.decoder_pos_embed
-
             for blk in self.decoder_blocks:
                 x_full = blk(x_full)
 
@@ -161,65 +108,34 @@ class LDMAE(nn.Module):
             x_out = self.unpatchify(x_out)
 
             return x_out, mask, posterior
-            # z_token = self.z_to_decoder(z_dec).unsqueeze(1)  # [B, 1, D]
-            #
-            # x_vis_emb = self.decoder_embed(x_vis)
-            #
-            # B = x_vis_emb.shape[0]
-            # mask_tokens = self.mask_token.repeat(B, ids_mask.shape[1], 1)
-            #
-            # x_concat = torch.cat([x_vis_emb, z_token, mask_tokens], dim=1)
-            #
-            # z_tok = x_concat[:, x_vis_emb.shape[1]:x_vis_emb.shape[1] + 1]
-            # x_wo_z = torch.cat([x_concat[:, :x_vis_emb.shape[1]], x_concat[:, x_vis_emb.shape[1] + 1:]], dim=1)
-            #
-            # x_wo_z = torch.gather(
-            #     x_wo_z,
-            #     dim=1,
-            #     index=ids_restore.unsqueeze(-1).repeat(1, 1, x_wo_z.shape[-1])
-            # )
-            #
-            # x_dec = torch.cat([z_tok, x_wo_z], dim=1)
-            #
-            # z_tok = x_dec[:, :1, :]
-            # patch_tok = x_dec[:, 1:, :]
-            #
-            # patch_tok = patch_tok + self.decoder_pos_embed
-            #
-            # x_dec = torch.cat([z_tok, patch_tok], dim=1)
-            #
-            # for blk in self.decoder_blocks:
-            #     x_dec = blk(x_dec)
-            #
-            # x_dec = self.decoder_norm(x_dec)
-            # x_dec = x_dec[:, 1:, :]
-            # x_out = self.Decoder_pred(x_dec)
-            # x_out = self.unpatchify(x_out)
-            #
-            # return x_out, mask, posterior
 
+        ########################################################
+        # STAGE 2: LDM 학습 #
+        ########################################################
         elif stage == 2:
-            B = z.shape[0]
-
-            cond_patches = self.Patch_Posi(image1)
-            cond_vis = apply_focus_mask(cond_patches, ids_keep)
+            x_full_vis = x_patches
             for blk in self.Encoder_blocks:
-                cond_vis = blk(cond_vis)
-            cond_feat = cond_vis
+                x_full_vis = blk(x_full_vis)
 
-            noise = torch.randn_like(z)
+            latent_params = self.enc_to_latent(x_full_vis)
+            posterior = DiagonalGaussianDistribution(latent_params)
+
+            z_full = posterior.sample() if sample_latent else posterior.mean
+            B = z_full.shape[0]
+
+            grid_size = int(z_full.shape[1] ** 0.5)
+            z_spatial = rearrange(z_full, 'b (h w) c -> b c h w', h=grid_size, w=grid_size)
+
+            scale_factor = 0.17545
+            z_spatial = z_spatial * scale_factor
+
+            noise = torch.randn_like(z_spatial)
             if timestep is None:
-                timestep = torch.randint(0, scheduler.timesteps, (B,), device=z.device).long()
+                timestep = torch.randint(0, scheduler.timesteps, (B,), device=z_spatial.device).long()
+            z_noisy = scheduler.q_sample(z_spatial, timestep, noise)
 
-            z_noisy = scheduler.q_sample(z, timestep, noise)
-
-            t_emb = self.time_mlp(timestep).to(z.device)
-            # z_diff = self.z_to_dit(z_noisy).unsqueeze(1)
-            z_diff = self.z_to_dit(z_noisy)
-            for dit_blk in self.dit_blocks:
-                z_diff = dit_blk(z_diff, t_emb, cond=cond_feat)
-
-            noise_pred = self.dit_to_noise(z_diff)
+            cond_img = self.cond_encoder_2d(image1)
+            noise_pred = self.unet_model(x=z_noisy, timestep=timestep, cond=cond_img)
 
             return noise, noise_pred
 
@@ -260,7 +176,7 @@ class MultiHeadSelfAtt(nn.Module):
         QKV = rearrange(QKV, "b n (h d qkv) -> qkv b h n d", h=self.num_heads, qkv=3)
         queries, keys, values = QKV[0], QKV[1], QKV[2]
 
-        attention_score = torch.einsum('bhqd, bhkd -> bhqk', queries, keys) / self.scale
+        attention_score = torch.einsum('bhqd, bhkd -> bhqk', queries, keys) * self.scale
         attention_map = F.softmax(attention_score, dim=-1)
         attention_map = self.dropout(attention_map)
 
@@ -275,11 +191,11 @@ class FFN(nn.Module):
         super().__init__()
         self.norm = nn.LayerNorm(emb_dim)
         self.FFN = nn.Sequential(
-        nn.Linear(emb_dim, 4 * emb_dim),
-        nn.GELU(),
-        nn.Dropout(ffn_drop),
-        nn.Linear(4 * emb_dim, emb_dim),
-        nn.Dropout(ffn_drop))
+            nn.Linear(emb_dim, 4 * emb_dim),
+            nn.GELU(),
+            nn.Dropout(ffn_drop),
+            nn.Linear(4 * emb_dim, emb_dim),
+            nn.Dropout(ffn_drop))
 
     def forward(self, x):
         res = x
@@ -298,6 +214,7 @@ class ViT_block(nn.Module):
         x = self.ffn(x)
 
         return x
+
 #############################################################################################################
 # after encoding for downsmaple and for upsample
 # paper original code
@@ -306,7 +223,7 @@ class Downsample(nn.Module):
         super().__init__()
         self.conv = nn.Conv2d(in_channel, out_channel, kernel_size=3, stride=2)
 
-    def forward(self,x):
+    def forward(self, x):
         B, N, C = x.shape
         H = int(N ** 0.5)
         assert H * H == N, 'Size mismatch.'
@@ -357,7 +274,9 @@ class conv_decoder_pred(nn.Module):
     def __init__(self, decoder_embed_dim, patch_size, in_chans, pred_with_conv=True):
         super(conv_decoder_pred, self).__init__()
         self.p = patch_size
+        self.in_chas = in_chans
         self.pred_with_conv = pred_with_conv
+
         if self.pred_with_conv:
             print('pred only with conv instead of previous linear')
             self.conv_smoother = nn.Conv2d(decoder_embed_dim, patch_size ** 2 * in_chans, 1, stride=1, padding=0)
@@ -373,22 +292,21 @@ class conv_decoder_pred(nn.Module):
         if self.pred_with_conv:
             B = x.shape[0]
             x = x.reshape(B, h, w, -1).permute(0, 3, 1, 2)
-            # padding = (0, 1, 0, 1)  # Pad 1 on the right (W) and 1 on the bottom (H)
-            # Apply padding
-            # x = F.pad(x, padding, mode='constant', value=0)
-            x = self.conv_smoother(x)  # B C H W
-            x = x.reshape(B, -1, h * w).permute(0, 2, 1)  # B HW C
+            x = self.conv_smoother(x)
+            x = x.reshape(B, -1, h * w).permute(0, 2, 1)
 
         else:
-            x = self.linear_pred(x)  # B HW p_size*p_size*3
-            x = x.reshape(shape=(x.shape[0], h, w, self.p, self.p, 3))
+            x = self.linear_pred(x)
+
+            x = x.reshape(shape=(x.shape[0], h, w, self.p, self.p, self.in_chas))
             x = torch.einsum('nhwpqc->nchpwq', x)
-            x = x.reshape(shape=(x.shape[0], 3, h * self.p, w * self.p))  # B 3 256 256
+            x = x.reshape(shape=(x.shape[0], self.in_chas, h * self.p, w * self.p))  # B 3 256 256
 
             x = self.conv_smoother(x)
-            x = x.reshape(x.shape[0], 3, h, self.p, w, self.p)
+
+            x = x.reshape(x.shape[0], self.in_chas, h, self.p, w, self.p)
             x = torch.einsum('nchpwq->nhwpqc', x)
-            x = x.reshape(shape=(x.shape[0], h * w, self.p * self.p * 3))  # B HW C
+            x = x.reshape(shape=(x.shape[0], h * w, self.p * self.p * self.in_chas))  # B HW C
 
         return x
 
@@ -396,6 +314,8 @@ class conv_decoder_pred(nn.Module):
 # top 25% difference masking
 def patchify_focus(img, patch_size):
     # img: (B, C, H, W)
+    if img.ndim == 5:
+        img = rearrange(img, 'b c d h w -> b (c d) h w')
     B, C, H, W = img.shape
     p = patch_size
     h = H // p
@@ -437,8 +357,8 @@ def apply_focus_mask_keep_grid(x, mask):
     x: (B, N, C)
     mask: (B, N), 1 = masked, 0 = keep
     """
-    mask = mask.unsqueeze(-1)          # (B, N, 1)
-    x = x * (1.0 - mask)               # masked token = 0
+    mask = mask.unsqueeze(-1)  # (B, N, 1)
+    x = x * (1.0 - mask)  # masked token = 0
     return x
 
 def apply_focus_mask(x, ids_keep):
@@ -555,6 +475,7 @@ class CrossAttention(nn.Module):
         return self.to_out(out)
 
 class SpatialCrossAttention(nn.Module):
+
     def __init__(self, channels, context_dim, heads=4, dim_head=32):
         super().__init__()
         self.norm = nn.GroupNorm(8, channels)
@@ -572,6 +493,7 @@ class SpatialCrossAttention(nn.Module):
         out = rearrange(out, 'b (h w) c -> b c h w', h=h, w=w)
 
         return residual + out
+
 
 class ResidualMLPBlock(nn.Module):
     def __init__(self, in_dim, time_emb_dim, cond_dim):
@@ -591,11 +513,9 @@ class ResidualMLPBlock(nn.Module):
         t_emb = self.time_mlp(t)
         cond_emb = self.cond_proj(cond)
 
-        # 입력 + 시간 임베딩 + 조건 임베딩
         h = self.norm1(x + t_emb + cond_emb)
         out = self.net(h)
 
-        # Skip Connection
         return self.norm2(x + out)
 
 class Block(nn.Module):
@@ -632,7 +552,7 @@ class Block(nn.Module):
 class SimpleUNet(nn.Module):
     def __init__(self):
         super().__init__()
-        image_channels=2
+        image_channels = 2
         down_channels = (64, 128, 256)
         up_channels = (256, 128, 64)
         out_dim = 1
@@ -646,7 +566,7 @@ class SimpleUNet(nn.Module):
 
         self.conv0 = nn.Conv2d(image_channels, down_channels[0], 3, padding=1)
 
-        self.downs = nn.ModuleList([Block(down_channels[i], down_channels[i + 1], time_emb_dim,) \
+        self.downs = nn.ModuleList([Block(down_channels[i], down_channels[i + 1], time_emb_dim, ) \
                                     for i in range(len(down_channels) - 1)])
 
         self.ups = nn.ModuleList([Block(up_channels[i], up_channels[i + 1], time_emb_dim, up=True) \
@@ -660,7 +580,6 @@ class SimpleUNet(nn.Module):
         x = torch.cat([x, cond], dim=1)
         x = self.conv0(x)
 
-        # Residual connections storage
         residuals = []
         for down in self.downs:
             x = down(x, t, cond)
@@ -668,7 +587,7 @@ class SimpleUNet(nn.Module):
 
         for up in self.ups:
             residual = residuals.pop()
-            x = torch.cat((x, residual), dim=1)  # Skip connection
+            x = torch.cat((x, residual), dim=1)
             x = up(x, t, cond)
 
         return self.output(x)
@@ -676,7 +595,7 @@ class SimpleUNet(nn.Module):
 class SimpleUNetWithAttention(nn.Module):
     def __init__(self):
         super().__init__()
-        image_channels = 1  # Grayscale 가정
+        image_channels = 1
         down_channels = (64, 128, 256)
         up_channels = (256, 128, 64)
         out_dim = 1
@@ -684,7 +603,6 @@ class SimpleUNetWithAttention(nn.Module):
 
         self.context_dim = 128
 
-        # Time embedding
         self.time_mlp = nn.Sequential(
             SinusoidalPositionEmbeddings(time_emb_dim),
             nn.Linear(time_emb_dim, time_emb_dim),
@@ -693,54 +611,39 @@ class SimpleUNetWithAttention(nn.Module):
 
         self.conv0 = nn.Conv2d(image_channels, down_channels[0], 3, padding=1)
 
-        # Downsample Blocks
         self.downs = nn.ModuleList([])
         for i in range(len(down_channels) - 1):
             self.downs.append(Block(down_channels[i], down_channels[i + 1], time_emb_dim))
 
-        # [NEW] Cross Attention Layer (Bottleneck에 추가)
-        # 가장 깊은 곳(channel=256)에서 Attention 수행
         self.mid_attn = SpatialCrossAttention(channels=256, context_dim=self.context_dim)
 
-        # Upsample Blocks
         self.ups = nn.ModuleList([])
         for i in range(len(up_channels) - 1):
             self.ups.append(Block(up_channels[i], up_channels[i + 1], time_emb_dim, up=True))
 
         self.output = nn.Conv2d(up_channels[-1], out_dim, 1)
 
-        # [NEW] Condition Encoder (Visible 이미지를 feature로 변환)
-        # 단순함을 위해 1x1 conv로 차원만 맞춤 (더 복잡한 ViT나 CNN 사용 가능)
         self.cond_encoder = nn.Sequential(
             nn.Conv2d(1, self.context_dim, 3, padding=1),
             nn.ReLU(),
-            nn.AdaptiveAvgPool2d((16, 16))  # (Batch, 128, 16, 16)으로 크기 고정
+            nn.AdaptiveAvgPool2d((16, 16))
         )
 
     def forward(self, x, timestep, cond):
-        # 1. Time Embedding
         t = self.time_mlp(timestep)
 
-        # 2. Condition Encoding (Visible Image -> Context Sequence)
-        # cond: (Batch, 1, H, W) -> encoder -> (Batch, 128, 16, 16)
         cond_emb = self.cond_encoder(cond)
-        # Attention에 넣기 위해 Sequence 형태로 변환: (Batch, 16*16, 128)
         cond_seq = rearrange(cond_emb, 'b c h w -> b (h w) c')
 
-        # 3. Initial Conv
         x = self.conv0(x)
 
-        # 4. Downsampling
         residuals = []
         for down in self.downs:
-            x = down(x, t, cond)  # 기존 Block의 cond는 단순 더하기용 (유지하거나 제거 가능)
+            x = down(x, t, cond)
             residuals.append(x)
 
-        # 5. [NEW] Cross Attention (정보 주입의 핵심)
-        # x는 현재 노이즈 이미지 특징, cond_seq는 Visible 이미지 특징
         x = self.mid_attn(x, cond_seq)
 
-        # 6. Upsampling
         for up in self.ups:
             residual = residuals.pop()
             x = torch.cat((x, residual), dim=1)
@@ -763,15 +666,168 @@ class DiTBlock(nn.Module):
 
         self.adaLN_modulation = nn.Sequential(
             nn.SiLU(),
-            nn.Linear(time_emb_dim, emb_dim * 2)
+            nn.Linear(time_emb_dim, emb_dim * 6)
         )
 
     def forward(self, x, t_emb, cond):
         scale_shift = self.adaLN_modulation(t_emb)
-        scale, shift = scale_shift.unsqueeze(1).chunk(2, dim=-1)
+        scale1, shift1, scale2, shift2, scale3, shift3 = scale_shift.unsqueeze(1).chunk(6, dim=-1)
 
-        h = self.norm1(x) * (1 + scale) + shift
-        x = x + self.self_att(h)
-        x = x + self.cross_att(self.norm2(x), cond)
-        x = x + self.ffn(self.norm3(x))
+        h1 = self.norm1(x) * (1 + scale1) + shift1
+        x = x + self.self_att(h1)
+
+        h2 = self.norm2(x) * (1 + scale2) + shift2
+        x = x + self.cross_att(h2, cond)
+
+        h3 = self.norm3(x) * (1 + scale3) + shift3
+        x = x + self.ffn(h3)
         return x
+
+
+class LDM_SpatialTransformer(nn.Module):
+    def __init__(self, channels, context_dim, heads=4, dim_head=32):
+        super().__init__()
+        self.norm = nn.GroupNorm(8, channels)
+        self.proj_in = nn.Conv2d(channels, channels, 1)
+
+        self.norm1 = nn.LayerNorm(channels)
+        self.attn1 = CrossAttention(query_dim=channels, context_dim=channels, heads=heads, dim_head=dim_head)
+
+        self.norm2 = nn.LayerNorm(channels)
+        self.attn2 = CrossAttention(query_dim=channels, context_dim=context_dim, heads=heads, dim_head=dim_head)
+
+        self.norm3 = nn.LayerNorm(channels)
+        self.ffn = nn.Sequential(
+            nn.Linear(channels, channels * 4),
+            nn.GELU(),
+            nn.Linear(channels * 4, channels)
+        )
+
+        self.proj_out = nn.Conv2d(channels, channels, 1)
+
+    def forward(self, x, context):
+        b, c, h, w = x.shape
+        residual = x
+
+        x = self.norm(x)
+        x = self.proj_in(x)
+
+        x_seq = rearrange(x, 'b c h w -> b (h w) c')
+
+        x_seq = x_seq + self.attn1(self.norm1(x_seq), self.norm1(x_seq))
+        x_seq = x_seq + self.attn2(self.norm2(x_seq), context)  # 여기서 cond_seq가 주입됨!
+        x_seq = x_seq + self.ffn(self.norm3(x_seq))
+
+        x = rearrange(x_seq, 'b (h w) c -> b c h w', h=h, w=w)
+        x = self.proj_out(x)
+
+        return residual + x
+
+class LDMBlock(nn.Module):
+    def __init__(self, in_ch, out_ch, time_emb_dim, up=False):
+        super().__init__()
+        self.time_mlp = nn.Linear(time_emb_dim, out_ch)
+
+        conv_in_ch = 2 * in_ch if up else in_ch
+        self.conv1 = nn.Conv2d(conv_in_ch, out_ch, 3, padding=1)
+        self.conv2 = nn.Conv2d(out_ch, out_ch, 3, padding=1)
+
+        if up:
+            self.transform = nn.ConvTranspose2d(out_ch, out_ch, 4, 2, 1)
+        else:
+            self.transform = nn.Conv2d(out_ch, out_ch, 4, 2, 1)
+
+        self.bnorm1 = nn.GroupNorm(8, out_ch)
+        self.bnorm2 = nn.GroupNorm(8, out_ch)
+        self.silu = nn.SiLU()
+
+    def forward(self, x, t):
+        h = self.bnorm1(self.silu(self.conv1(x)))
+
+        time_emb = self.silu(self.time_mlp(t))
+        time_emb = time_emb.unsqueeze(-1).unsqueeze(-1)
+        h = h + time_emb
+
+        h = self.bnorm2(self.silu(self.conv2(h)))
+        return self.transform(h)
+
+class StandardLDMUNet(nn.Module):
+    def __init__(self, in_channels=32):
+        super().__init__()
+
+        image_channels = in_channels
+        cond_channels = in_channels
+
+        total_in_channels = image_channels + cond_channels
+
+        out_dim = in_channels
+
+        down_channels = (64, 128, 256)
+        up_channels = (256, 128, 64)
+        time_emb_dim = 128
+        self.context_dim = 128
+
+        self.time_mlp = nn.Sequential(
+            SinusoidalPositionEmbeddings(time_emb_dim),
+            nn.Linear(time_emb_dim, time_emb_dim * 4),
+            nn.SiLU(),
+            nn.Linear(time_emb_dim * 4, time_emb_dim)
+        )
+
+        self.cond_encoder = nn.Sequential(
+            nn.Conv2d(cond_channels, 64, 3, padding=1),
+            nn.SiLU(),
+            nn.Conv2d(64, self.context_dim, 3, padding=1),
+            nn.SiLU()
+        )
+
+        self.conv0 = nn.Conv2d(total_in_channels, down_channels[0], 3, padding=1)
+
+        self.downs = nn.ModuleList([])
+        self.down_attns = nn.ModuleList([])
+        for i in range(len(down_channels) - 1):
+            self.downs.append(LDMBlock(down_channels[i], down_channels[i + 1], time_emb_dim))
+            self.down_attns.append(LDM_SpatialTransformer(down_channels[i + 1], self.context_dim))
+
+        self.mid_attn = LDM_SpatialTransformer(down_channels[-1], self.context_dim)
+
+        self.ups = nn.ModuleList([])
+        self.up_attns = nn.ModuleList([])
+        for i in range(len(up_channels) - 1):
+            self.ups.append(LDMBlock(up_channels[i], up_channels[i + 1], time_emb_dim, up=True))
+            self.up_attns.append(LDM_SpatialTransformer(up_channels[i + 1], self.context_dim))
+
+        self.output = nn.Sequential(
+            nn.Conv2d(up_channels[-1] + down_channels[0], 64, 3, padding=1),
+            nn.SiLU(),
+            nn.Conv2d(64, in_channels, 1)
+        )
+
+    def forward(self, x, timestep, cond):
+        t = self.time_mlp(timestep)
+
+        cond_emb = self.cond_encoder(cond)
+        cond_seq = rearrange(cond_emb, 'b c h w -> b (h w) c')
+
+        x = torch.cat([x, cond], dim=1)
+        x = self.conv0(x)
+
+        x_skip_28 = x
+        residuals = []
+
+        for down, attn in zip(self.downs, self.down_attns):
+            x = down(x, t)
+            x = attn(x, cond_seq)
+            residuals.append(x)
+
+        x = self.mid_attn(x, cond_seq)
+
+        for up, attn in zip(self.ups, self.up_attns):
+            residual = residuals.pop()
+            x = torch.cat((x, residual), dim=1)
+            x = up(x, t)
+            x = attn(x, cond_seq)
+
+        x = torch.cat([x, x_skip_28], dim=1)
+
+        return self.output(x)
