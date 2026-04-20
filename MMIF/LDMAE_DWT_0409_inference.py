@@ -1,17 +1,56 @@
 import torch
-from models.LDMAE_DWT_0326 import LDMAE, DiffusionScheduler
-from data.dataset import ex_data1, ex_data2, ex_data_dwt
-import numpy as np
-import cv2
+from models.LDMAE_DWT_0409 import LDMAE, DiffusionScheduler
+from data.dataset import ex_data1, ex_data_dwt
+
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 from pytorch_wavelets import DWTForward, DWTInverse
 from einops import rearrange
 
+import cv2
+from PIL import Image
+import numpy as np
+
+def restore_rgb_from_ycbcr(model_y_output, original_vis_path, target_size=(224, 224)):
+    orig_rgb = Image.open(original_vis_path).convert('RGB')
+    orig_rgb = orig_rgb.resize(target_size, Image.BICUBIC)
+
+    orig_ycbcr = orig_rgb.convert('YCbCr')
+    _, cb, cr = orig_ycbcr.split()
+
+    h, w = model_y_output.shape
+    if (h, w) != target_size:
+        model_y_output = cv2.resize(model_y_output, target_size, interpolation=cv2.INTER_CUBIC)
+
+    y_uint8 = np.clip(model_y_output * 255.0, 0, 255).astype(np.uint8)
+    new_y = Image.fromarray(y_uint8, mode='L')
+
+    final_ycbcr = Image.merge('YCbCr', (new_y, cb, cr))
+    final_rgb = final_ycbcr.convert('RGB')
+
+    return np.array(final_rgb)
+
 @torch.no_grad()
 def get_noise_prediction(model, x_noisy_2d, t, cond_img_2d):
-    noise_pred = model.unet_model(x=x_noisy_2d, timestep=t, cond=cond_img_2d)
+    noise_pred = model.dit_model(x_seq=x_noisy_2d, timestep=t, cond_spatial=cond_img_2d)
     return noise_pred
+
+
+@torch.no_grad()
+def p_sample_loop_sdedit(model, scheduler, z_base_scaled, cond, device, start_step=400):
+    b = z_base_scaled.shape[0]
+
+    noise = torch.randn_like(z_base_scaled)
+    t_start = torch.full((b,), start_step, device=device, dtype=torch.long)
+    img = scheduler.q_sample(z_base_scaled, t_start, noise)
+
+    print(f"SDEdit Sampling Start from step {start_step}...")
+
+    for i in tqdm(reversed(range(0, start_step)), desc='sampling loop', total=start_step):
+        t = torch.full((b,), i, device=device, dtype=torch.long)
+        img = p_sample(model, scheduler, img, t, i, cond)
+
+    return img
 
 @torch.no_grad()
 def p_sample(model, scheduler, x, t, t_index, cond):
@@ -19,7 +58,7 @@ def p_sample(model, scheduler, x, t, t_index, cond):
     sqrt_one_minus_alphas_cumprod_t = scheduler.extract(scheduler.sqrt_one_minus_alphas_cumprod, t, x.shape)
     sqrt_recip_alphas_t = scheduler.extract(torch.sqrt(1.0 / scheduler.alphas), t, x.shape)
 
-    predicted_noise = get_noise_prediction(model, x, t, cond) # ids_keep 제거
+    predicted_noise = get_noise_prediction(model, x, t, cond)
 
     model_mean = sqrt_recip_alphas_t * (x - betas_t * predicted_noise / sqrt_one_minus_alphas_cumprod_t)
 
@@ -41,26 +80,10 @@ def p_sample_loop(model, scheduler, shape, cond, device): # ids_keep 제거
         img = p_sample(model, scheduler, img, t, i, cond) # ids_keep 제거
     return img
 
-def decode_image(model, generated_z, ids_restore, ids_mask):
-    B = generated_z.shape[0]
-
-    if generated_z.ndim == 3 and generated_z.shape[0] > B:
-        generated_z = generated_z[-1]
-
+def decode_image(model, generated_z):
     z_dec = model.latent_to_dec(generated_z)
 
-    N_mask = ids_mask.shape[1]
-    mask_tokens = model.mask_token.repeat(B, N_mask, 1)
-
-    x_concat = torch.cat([z_dec, mask_tokens], dim=1)
-
-    x_full = torch.gather(
-        x_concat,
-        dim=1,
-        index=ids_restore.unsqueeze(-1).repeat(1, 1, x_concat.shape[-1])
-    )
-
-    x_full = x_full + model.decoder_pos_embed
+    x_full = z_dec + model.decoder_pos_embed
 
     for blk in model.decoder_blocks:
         x_full = blk(x_full)
@@ -123,12 +146,12 @@ def stage1(freq='low'):
     low_vmae_pt_path = r"C:\Users\12wkd\Desktop\best_stage1_low_vmae.pth"
     high_vmae_pt_path = r"C:\Users\12wkd\Desktop\best_stage1_high_vmae.pth"
 
-    # 190001 210014 210016 220055 200002
-    # vis_img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\LLVIP\visible\test\210075.jpg"
-    # inf_img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\LLVIP\infrared\test\210075.jpg"
+    # low_vmae_pt_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\LDMAE_DWT_0326_checkpoints\best_stage1_5_low_vmae_finetuned.pth"
+    # high_vmae_pt_path =  r"C:\Users\12wkd\Desktop\experiments\MMIF\LDMAE_DWT_0326_checkpoints\best_stage1_5_high_vmae_finetuned.pth"
 
-    vis_img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\LLVIP\visible\train\040379.jpg"
-    inf_img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\LLVIP\infrared\train\040379.jpg"
+    # 190001 200110 210145 260267
+    vis_img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\LLVIP\visible\test\260267.jpg"
+    inf_img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\LLVIP\infrared\test\260267.jpg"
 
     # vis_img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\test\visible\010081.jpg"
     # inf_img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\test\infrared\010081.jpg"
@@ -148,6 +171,7 @@ def stage1(freq='low'):
     filtered_state_dict = {k: v for k, v in checkpoint1['model_state'].items() if 'unet_model' not in k and 'cond_encoder_2d' not in k}
     model.load_state_dict(filtered_state_dict, strict=False)
     model.eval()
+    model.mask_ratio = 0.25
 
     samples = []
 
@@ -169,14 +193,16 @@ def stage1(freq='low'):
         x, mask, posterior = model(img1_freq, img2_freq, stage=1)
 
         for _ in range(20):
-            samp_x, _, _ = model(img1_freq, img2_freq, stage=1, sample_latent=True, latent_scale=30)
+            samp_x, _, _ = model(img1_freq, img2_freq, stage=1, sample_latent=True, latent_scale=50)
             samples.append(samp_x.cpu())
 
     if freq == 'low':
         vis = img1_freq.squeeze().detach().cpu().numpy()
         inf = img2_freq.squeeze().detach().cpu().numpy()
+
         x_img = x.squeeze().detach().cpu().numpy()
         # x_img = np.clip(x_img, 0, 1)
+
 
         plt.figure(figsize=(12, 4))
         plt.subplot(1, 4, 1)
@@ -202,15 +228,17 @@ def stage1(freq='low'):
         plt.tight_layout()
         plt.show()
 
-        plt.figure(figsize=(20, 8))
-        for i, img in enumerate(samples):
-            plt.subplot(4, 5, i + 1)
-            plt.imshow(img.squeeze().detach().cpu().numpy(), cmap='gray')
-            plt.title(f"sample {i + 1}")
-            plt.axis('off')
 
-        plt.tight_layout()
-        plt.show()
+
+        # plt.figure(figsize=(20, 8))
+        # for i, img in enumerate(samples):
+        #     plt.subplot(4, 5, i + 1)
+        #     plt.imshow(img.squeeze().detach().cpu().numpy(), cmap='gray')
+        #     plt.title(f"sample {i + 1}")
+        #     plt.axis('off')
+        #
+        # plt.tight_layout()
+        # plt.show()
 
         low_feature = x_img
         return low_feature
@@ -257,14 +285,18 @@ def stage1(freq='low'):
         return high_feature
 
 def stage2(freq='low'):
-    low_vmae_pt_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\LDMAE_DWT_0319_checkpoints\best_stage2_low_ldmae.pth"
-    high_vmae_pt_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\LDMAE_DWT_0319_checkpoints\best_stage2_high_ldmae.pth"
+    low_vmae_pt_path = r"C:\Users\12wkd\Desktop\exp_result\0409\best_stage2_low_ldmae.pth"
+    high_vmae_pt_path = r"C:\Users\12wkd\Desktop\exp_result\0409\best_stage2_high_ldmae.pth"
 
     # 190001 210014 210016
     # vis_img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\test\visible\010081.jpg"
     # inf_img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\test\infrared\010081.jpg"
-    vis_img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\train\visible\010001.jpg"
-    inf_img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\train\infrared\010001.jpg"
+
+    # vis_img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\train\visible\010001.jpg"
+    # inf_img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\onlytest\train\infrared\010001.jpg"
+
+    vis_img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\LLVIP\visible\test\190001.jpg"
+    inf_img_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\LLVIP\infrared\test\190001.jpg"
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -285,14 +317,14 @@ def stage2(freq='low'):
     vis_low, vis_high = ex_data_dwt(root_dir=vis_img_path)
     inf_low, inf_high = ex_data_dwt(root_dir=inf_img_path)
 
-    if vis_low.max() > 1.0:
-        vis_low = vis_low / 255.0
-        vis_high = [h / 255.0 for h in vis_high]
-        inf_low = inf_low / 255.0
-        inf_high = [h / 255.0 for h in inf_high]
-
-    vis_low = (vis_low - 0.5) / 0.5
-    inf_low = (inf_low - 0.5) / 0.5
+    # if vis_low.max() > 1.0:
+    #     vis_low = vis_low / 255.0
+    #     vis_high = [h / 255.0 for h in vis_high]
+    #     inf_low = inf_low / 255.0
+    #     inf_high = [h / 255.0 for h in inf_high]
+    #
+    # vis_low = (vis_low - 0.5) / 0.5
+    # inf_low = (inf_low - 0.5) / 0.5
 
     if freq == 'low':
         vis_image = vis_low.to(device)
@@ -305,37 +337,57 @@ def stage2(freq='low'):
 
     with torch.no_grad():
         cond_feat = model.cond_encoder_2d(vis_image)
+        model.mask_ratio = 0.0
 
-        B = vis_image.shape[0]
-        grid_size = model.Patch_Posi.patch_size
-        H = W = 112 // (grid_size[0] if isinstance(grid_size, tuple) else grid_size)  # 28
-        D = model.latent_dim  # 32
+        posterior, _ = model._encode_to_spatial_latent(vis_image, inf_image)
+        z_base = posterior.sample()
+        z_base_scaled = (z_base - model.latent_mean) * model.scale_factor
 
-        latent_shape = (B, D, H, W)
+        # # 확인용
+        # print("\n--- Diffusion Learning Check (One-step, Full 784) ---")
+        #
+        # # 1. 마스킹 없이 전체 패치를 인코딩 (Stage 1.5 로직)
+        # x_sum = vis_image + inf_image
+        # x_patches = model.Patch_Posi(x_sum)
+        #
+        # # Encoder Blocks 통과 (마스킹 없이 전체 784개 통과)
+        # x_enc = x_patches
+        # for blk in model.Encoder_blocks:
+        #     x_enc = blk(x_enc)
+        #
+        # latent_params = model.enc_to_latent(x_enc)
+        # posterior_true = DiagonalGaussianDistribution(latent_params)
+        #
+        # # 정답 z 추출 및 스케일 적용 (1, 784, 32)
+        # z_true_1d = posterior_true.mean * model.scale_factor
+        #
+        # # 2. 아주 적은 노이즈(t=50) 섞기
+        # t_zero = torch.tensor([0], device=device)
+        # # 노이즈를 아예 섞지 않은 순수 정답 z_true_1d를 넣었을 때
+        # # 모델이 뱉는 pred_noise가 0에 수렴하는지 확인
+        # pred_noise_zero = model.dit_model(x_seq=z_true_1d, timestep=t_zero, cond_spatial=cond_feat)
+        # error_zero = torch.mean(pred_noise_zero ** 2)
+        # print(f"[Check] Error at t=0 (Should be near 0): {error_zero.item():.6f}")
 
-        generated_z_2d = p_sample_loop(model, scheduler, latent_shape, cond_feat, device)
+        generated_z_2d = p_sample_loop_sdedit(
+            model, scheduler, z_base_scaled, cond_feat, device, start_step=500
+        )
+        generated_z_2d = (generated_z_2d / model.scale_factor) + model.latent_mean
+        print(model.scale_factor)
+        output = decode_image(model, generated_z_2d)
 
-
-        generated_z_2d = generated_z_2d / model.scale_factor
-
-        generated_z_1d = rearrange(generated_z_2d, 'b c h w -> b (h w) c')
-
-        z_dec = model.latent_to_dec(generated_z_1d)
-        x_full = z_dec + model.decoder_pos_embed
-
-        for blk in model.decoder_blocks:
-            x_full = blk(x_full)
-
-        x_full = model.decoder_norm(x_full)
-        output = model.Decoder_pred(x_full)
-        output = model.unpatchify(output)
 
     if freq == 'low':
         vis_np = vis_image.squeeze().cpu().numpy()
         inf_np = inf_image.squeeze().cpu().numpy()
         out_low = output.squeeze().cpu().numpy()
-        out_low = (out_low * 0.5) + 0.5
-        out_low = np.clip(out_low, 0, 1)
+
+        sum_feature = inf_np + vis_np
+        color_recon_vis = restore_rgb_from_ycbcr(vis_np, vis_img_path)
+        color_recon_sum_feature = restore_rgb_from_ycbcr(sum_feature, vis_img_path)
+        color_recon_x_img = restore_rgb_from_ycbcr(out_low, vis_img_path)
+        # out_low = (out_low * 0.5) + 0.5
+        # out_low = np.clip(out_low, 0, 1)
 
         plt.figure(figsize=(15, 6))
         plt.subplot(1, 4, 1)
@@ -356,6 +408,30 @@ def stage2(freq='low'):
         plt.subplot(1, 4, 4)
         plt.title("Diffusion Output")
         plt.imshow(out_low, cmap='gray')
+        plt.axis('off')
+
+        plt.tight_layout()
+        plt.show()
+
+        plt.figure(figsize=(12, 4))
+        plt.subplot(1, 4, 1)
+        plt.title("Visible Input (RGB)")
+        plt.imshow(color_recon_vis)
+        plt.axis('off')
+
+        plt.subplot(1, 4, 2)
+        plt.title("Infrared Input")
+        plt.imshow(inf_np, cmap='gray')
+        plt.axis('off')
+
+        plt.subplot(1, 4, 3)
+        plt.title("Summation feature (RGB)")
+        plt.imshow(color_recon_sum_feature)
+        plt.axis('off')
+
+        plt.subplot(1, 4, 4)
+        plt.title("Model Output (Recon RGB)")
+        plt.imshow(color_recon_x_img)
         plt.axis('off')
 
         plt.tight_layout()
@@ -407,28 +483,8 @@ if __name__ == '__main__':
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     dwt = DWTForward(J=1, mode='zero', wave='haar').to(device)
-    low_feat = stage1(freq='low')
-    high_feat = stage1(freq='high')
-
-    low_tensor = torch.tensor(low_feat, dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)
-    high_tensor = torch.tensor(high_feat, dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)
-
-    ifm = DWTInverse(mode="periodization", wave='haar').to(device)
-
-    inverse_out = ifm((low_tensor, [high_tensor]))
-
-    final_img = inverse_out.squeeze().detach().cpu().numpy()
-    final_img = np.clip(final_img, 0, 1)
-
-    plt.figure(figsize=(6, 6))
-    plt.title("Final Output Image(IDWT)")
-    plt.imshow(final_img, cmap='gray')
-    plt.axis('off')
-    plt.tight_layout()
-    plt.show()
-
-    # low_feat = stage2(freq='low')
-    # high_feat = stage2(freq='high')
+    # low_feat = stage1(freq='low')
+    # high_feat = stage1(freq='high')
     #
     # low_tensor = torch.tensor(low_feat, dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)
     # high_tensor = torch.tensor(high_feat, dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)
@@ -438,7 +494,27 @@ if __name__ == '__main__':
     # inverse_out = ifm((low_tensor, [high_tensor]))
     #
     # final_img = inverse_out.squeeze().detach().cpu().numpy()
-    # final_img = np.clip(final_img, 0, 1)
+    # # final_img = np.clip(final_img, 0, 1)
+    #
+    # plt.figure(figsize=(6, 6))
+    # plt.title("Final Output Image(IDWT)")
+    # plt.imshow(final_img, cmap='gray')
+    # plt.axis('off')
+    # plt.tight_layout()
+    # plt.show()
+
+    low_feat = stage2(freq='low')
+    high_feat = stage2(freq='high')
+    #
+    # low_tensor = torch.tensor(low_feat, dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)
+    # high_tensor = torch.tensor(high_feat, dtype=torch.float32, device=device).unsqueeze(0).unsqueeze(0)
+    #
+    # ifm = DWTInverse(mode="periodization", wave='haar').to(device)
+    #
+    # inverse_out = ifm((low_tensor, [high_tensor]))
+    #
+    # final_img = inverse_out.squeeze().detach().cpu().numpy()
+    # # final_img = np.clip(final_img, 0, 1)
     #
     # plt.figure(figsize=(6, 6))
     # plt.title("Final Output Image(IDWT)")

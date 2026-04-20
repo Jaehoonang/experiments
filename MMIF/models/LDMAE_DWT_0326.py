@@ -19,6 +19,7 @@ class LDMAE(nn.Module):
 
         self.masking = masking
         self.freeze_encoder_in_stage2 = freeze_encoder_in_stage2
+        self.mask_ratio = 0.25
         self.patch_size = patch_size
         self.img_size = img_size
         num_patches = (img_size // patch_size) ** 2
@@ -52,17 +53,39 @@ class LDMAE(nn.Module):
 
         self.decoder_norm = nn.LayerNorm(decoder_embed_dim)
         self.Decoder_pred = conv_decoder_pred(decoder_embed_dim, patch_size, in_channels, pred_with_conv=False)
-        self.unet_model = StandardLDMUNet(in_channels=latent_dim)
+        # self.unet_model = StandardLDMUNet(in_channels=latent_dim)
 
         assert img_size % (patch_size) == 0, "img_size must be divisible by patch_size"
+        # self.cond_encoder_2d = nn.Sequential(
+        #     nn.Conv2d(in_channels, emb_dim // 2, kernel_size=3, stride=2, padding=1),
+        #     nn.GroupNorm(8, emb_dim // 2),
+        #     nn.SiLU(),
+        #     nn.Conv2d(emb_dim // 2, latent_dim, kernel_size=3, stride=2, padding=1),
+        #     nn.GroupNorm(8, latent_dim),
+        #     nn.SiLU(),
+        #     nn.AdaptiveAvgPool2d((grid_size, grid_size))
+        # )
         self.cond_encoder_2d = nn.Sequential(
-            nn.Conv2d(in_channels, emb_dim // 2, kernel_size=3, stride=2, padding=1),
-            nn.GroupNorm(8, emb_dim // 2),
-            nn.SiLU(),
-            nn.Conv2d(emb_dim // 2, latent_dim, kernel_size=3, stride=2, padding=1),
+            nn.Conv2d(in_channels, latent_dim, kernel_size=3, padding=1),
             nn.GroupNorm(8, latent_dim),
             nn.SiLU(),
-            nn.AdaptiveAvgPool2d((grid_size, grid_size))
+
+            nn.Conv2d(latent_dim, latent_dim, kernel_size=3, padding=1),
+            nn.GroupNorm(8, latent_dim),
+            nn.SiLU(),
+
+            nn.Conv2d(latent_dim, latent_dim, kernel_size=patch_size, stride=patch_size),
+            nn.GroupNorm(8, latent_dim),
+            nn.SiLU()
+        )
+
+        self.dit_model = StandardDiT(
+            latent_dim=latent_dim,
+            emb_dim=256,
+            depth=6,
+            num_heads=8,
+            cond_dim=latent_dim,
+            grid_size=self.grid_size
         )
 
     @torch.no_grad()
@@ -100,11 +123,17 @@ class LDMAE(nn.Module):
     def _encode_to_spatial_latent(self, image1, image2):
         x_sum = image1 + image2
         x_patches = self.Patch_Posi(x_sum)
+
+        score = compute_focus_score(image1, image2, patch_size=self.Patch_Posi.patch_size)
+        mask, ids_keep, ids_mask, ids_restore = focus_mask(score, mask_ratio=self.mask_ratio)
+        x_vis = apply_focus_mask(x_patches, ids_keep)
+
         for blk in self.Encoder_blocks:
-            x_patches = blk(x_patches)
-        latent_params = self.enc_to_latent(x_patches)
+            x_vis = blk(x_vis)
+
+        latent_params = self.enc_to_latent(x_vis)
         posterior = DiagonalGaussianDistribution(latent_params)
-        return posterior
+        return posterior, ids_restore
 
     def unpatchify(self, x):
         p = self.Patch_Posi.patch_size
@@ -131,7 +160,8 @@ class LDMAE(nn.Module):
 
         if stage == 1:
             score = compute_focus_score(image1, image2, patch_size=self.Patch_Posi.patch_size)
-            mask, ids_keep, ids_mask, ids_restore = focus_mask(score, mask_ratio=0.25)
+            current_mask_ratio = self.mask_ratio if self.training else 0.0
+            mask, ids_keep, ids_mask, ids_restore = focus_mask(score, mask_ratio=current_mask_ratio)
             x_vis = apply_focus_mask(x_patches, ids_keep)
 
             for blk in self.Encoder_blocks:
@@ -139,7 +169,13 @@ class LDMAE(nn.Module):
 
             latent_params = self.enc_to_latent(x_vis)
             posterior = DiagonalGaussianDistribution(latent_params)
-            z = posterior.sample() if sample_latent else posterior.mean
+            if sample_latent:
+                z = posterior.sample()
+                if latent_scale != 1.0:
+                    z = posterior.mean + latent_scale * (z - posterior.mean)
+            else:
+                z = posterior.mean
+
 
             z_dec = self.latent_to_dec(z)
             B = z_dec.shape[0]
@@ -166,23 +202,20 @@ class LDMAE(nn.Module):
         # STAGE 2: LDM 학습 #
         ########################################################
         elif stage == 2:
-            posterior = self._encode_to_spatial_latent(image1, image2)
+            posterior, _ = self._encode_to_spatial_latent(image1, image2)
             z_full = posterior.sample() if sample_latent else posterior.mean
             B = z_full.shape[0]
 
-            z_spatial = rearrange(
-                z_full, 'b (h w) c -> b c h w', h=self.grid_size, w=self.grid_size
-            )
-
-            z_scaled = z_spatial * self.scale_factor
-
+            z_scaled = z_full * self.scale_factor
             noise = torch.randn_like(z_scaled)
+
             if timestep is None:
                 timestep = torch.randint(0, scheduler.timesteps, (B,), device=z_scaled.device).long()
             z_noisy = scheduler.q_sample(z_scaled, timestep, noise)
 
             cond_img = self.cond_encoder_2d(image1)
-            noise_pred = self.unet_model(x=z_noisy, timestep=timestep, cond=cond_img)
+
+            noise_pred = self.dit_model(x_seq=z_noisy, timestep=timestep, cond_spatial=cond_img)
 
             return noise, noise_pred
 
@@ -385,6 +418,13 @@ def compute_focus_score(image1, image2, patch_size):
 def focus_mask(score, mask_ratio=0.25):
     B, N = score.shape
     N_mask = int(N * mask_ratio)
+
+    if N_mask == 0:
+        ids_keep = torch.arange(N, device=score.device).unsqueeze(0).expand(B, N)
+        ids_mask = torch.empty((B, 0), dtype=torch.int64, device=score.device)
+        ids_restore = ids_keep
+        mask = torch.zeros(B, N, device=score.device)
+        return mask, ids_keep, ids_mask, ids_restore
 
     _, ids_mask = torch.topk(score, N_mask, dim=1)
     ids_keep = torch.argsort(score, dim=1)[:, :-N_mask]
@@ -882,3 +922,49 @@ class StandardLDMUNet(nn.Module):
         x = torch.cat([x, x_stem_skip], dim=1)
 
         return self.output(x)
+
+
+class StandardDiT(nn.Module):
+    def __init__(self, latent_dim=32, emb_dim=256, depth=6, num_heads=8, cond_dim=128, grid_size=28):
+        super().__init__()
+        self.latent_dim = latent_dim
+        self.emb_dim = emb_dim
+        self.grid_size = grid_size
+        num_patches = grid_size * grid_size
+
+        self.time_mlp = nn.Sequential(
+            SinusoidalPositionEmbeddings(emb_dim),
+            nn.Linear(emb_dim, emb_dim * 4),
+            nn.SiLU(),
+            nn.Linear(emb_dim * 4, emb_dim)
+        )
+
+        self.proj_in = nn.Linear(latent_dim, emb_dim)
+        self.pos_embed = nn.Parameter(torch.randn(1, num_patches, emb_dim) * 0.02)
+
+        self.cond_proj = nn.Linear(cond_dim, cond_dim)
+
+        self.blocks = nn.ModuleList([
+            DiTBlock(emb_dim=emb_dim, num_heads=num_heads, time_emb_dim=emb_dim, cond_dim=cond_dim)
+            for _ in range(depth)
+        ])
+
+        self.norm_out = nn.LayerNorm(emb_dim)
+        self.proj_out = nn.Linear(emb_dim, latent_dim)
+
+        nn.init.zeros_(self.proj_out.weight)
+        nn.init.zeros_(self.proj_out.bias)
+
+    def forward(self, x_seq, timestep, cond_spatial):
+        t_emb = self.time_mlp(timestep)
+
+        cond_seq = rearrange(cond_spatial, 'b c h w -> b (h w) c')
+        cond_seq = self.cond_proj(cond_seq)
+
+        x = self.proj_in(x_seq) + self.pos_embed
+
+        for blk in self.blocks:
+            x = blk(x, t_emb, cond_seq)
+
+        x = self.norm_out(x)
+        return self.proj_out(x)

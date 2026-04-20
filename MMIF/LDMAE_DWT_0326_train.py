@@ -1,6 +1,5 @@
 import torch
-
-from models.LDMAE_DWT_0319 import LDMAE, DiffusionScheduler
+from models.LDMAE_DWT_0326 import LDMAE, DiffusionScheduler
 from torch.utils.data import DataLoader
 import torch.nn.functional as F
 from tqdm import tqdm
@@ -21,8 +20,9 @@ def vgg_norm(x):
 
 def train_stage1_vmae(model, dataloader, epochs, device, save_dir, vgg, mean, std, grad_loss_fn, dwt, beta=1e-4, freq='low', resume_path=None):
     print(f"\nStarting Stage 1: Autoencoder (VMAE) Training for {freq}...")
+    model.mask_ratio = 0.25
 
-    stage1_params = [p for n, p in model.named_parameters() if 'unet_model' not in n and 'cond_encoder_2d' not in n]
+    stage1_params = [p for n, p in model.named_parameters() if 'dit_model' not in n and 'cond_encoder_2d' not in n]
     optimizer = torch.optim.AdamW(stage1_params, lr=1e-4)
 
     best_loss = float("inf")
@@ -62,8 +62,8 @@ def train_stage1_vmae(model, dataloader, epochs, device, save_dir, vgg, mean, st
                 if freq == 'low':
                     img1_freq, img2_freq = vis_LL, ir_LL
                 else:
-                    img1_freq = vis_HF_list[0].squeeze(2)
-                    img2_freq = ir_HF_list[0].squeeze(2)
+                    img1_freq = rearrange(vis_HF_list[0], 'b c d h w -> b (c d) h w')
+                    img2_freq = rearrange(ir_HF_list[0], 'b c d h w -> b (c d) h w')
 
             optimizer.zero_grad()
 
@@ -133,19 +133,135 @@ def train_stage1_vmae(model, dataloader, epochs, device, save_dir, vgg, mean, st
 
     return save_path
 
-def train_stage2_diffusion(model, dataloader, epochs, device, save_dir, scheduler, stage1_weights_path, dwt, freq='low', resume_path=None):
-    print("\n Starting Stage 2: Diffusion Transformer (DiT) Training...")
+
+def train_stage1_5_finetune_decoder(model, dataloader, epochs, device, save_dir, vgg, mean, std, grad_loss_fn, dwt,
+                                    stage1_weights_path, beta=1e-4, freq='low'):
+    print(f"\n[Stage 1.5] Decoder Fine-Tuning for {freq}... (Masking 0%, Encoder Frozen)")
 
     if os.path.exists(stage1_weights_path):
         checkpoint = torch.load(stage1_weights_path, map_location=device)
-        filtered_state_dict = {k: v for k, v in checkpoint['model_state'].items() if 'unet_model' not in k and 'cond_encoder_2d' not in k}
-        model.load_state_dict(filtered_state_dict, strict=False)
-        print("Pre-trained Stage 1 weights loaded successfully!")
+        model.load_state_dict(checkpoint['model_state'], strict=False)
+        print(" Pre-trained Stage 1 weights loaded!")
     else:
-        print("Warning: Stage 1 weights not found. Training from scratch.")
+        raise FileNotFoundError("Stage 1 no weight. Stage 1 first.")
+
+    model.mask_ratio = 0.0
 
     for name, param in model.named_parameters():
-        if 'unet_model' in name or 'cond_encoder_2d' in name:
+        if any(k in name for k in
+               ['Patch_Posi', 'Encoder_blocks', 'enc_to_latent', 'pos_to_latent', 'dit_model', 'cond_encoder_2d', 'mask_token']):
+            param.requires_grad = False
+        else:
+            param.requires_grad = True
+
+    stage1_5_params = filter(lambda p: p.requires_grad, model.parameters())
+    optimizer = torch.optim.AdamW(stage1_5_params, lr=5e-5)
+
+    best_loss = float("inf")
+    save_path = os.path.join(save_dir, f"best_stage1_5_{freq}_vmae_finetuned.pth")
+
+    for epoch in range(epochs):
+        model.train()
+        model.Patch_Posi.eval()
+        model.Encoder_blocks.eval()
+        model.enc_to_latent.eval()
+
+        epoch_loss = 0.0
+        epoch_bar = tqdm(dataloader, desc=f"Stage 1.5 [Epoch {epoch + 1}/{epochs}]", leave=False)
+
+        for modal1_img, modal2_img in epoch_bar:
+            modal1_img, modal2_img = modal1_img.to(device), modal2_img.to(device)
+
+            with torch.no_grad():
+                vis_LL, vis_HF_list = dwt(modal1_img)
+                ir_LL, ir_HF_list = dwt(modal2_img)
+                if freq == 'low':
+                    img1_freq, img2_freq = vis_LL, ir_LL
+                else:
+                    img1_freq = rearrange(vis_HF_list[0], 'b c d h w -> b (c d) h w')
+                    img2_freq = rearrange(ir_HF_list[0], 'b c d h w -> b (c d) h w')
+
+            optimizer.zero_grad()
+            output, mask, posterior = model(img1_freq, img2_freq, stage=1)
+            target = torch.max(img1_freq, img2_freq)
+            if target.ndim == 5:
+                target = rearrange(target, 'b c d h w -> b (c d) h w')
+
+            B, C, H, W = output.shape
+            p = model.Patch_Posi.patch_size if not isinstance(model.Patch_Posi.patch_size, tuple) else \
+            model.Patch_Posi.patch_size[0]
+            h, w = H // p, W // p
+
+            img_mask = mask.reshape(B, 1, h, w).expand(B, C, h, w).repeat_interleave(p, dim=-2).repeat_interleave(p,
+                                                                                                                  dim=-1)
+            visible_mask = 1 - img_mask
+
+            recon = F.l1_loss(output, target, reduction='none')
+            recon_loss1 = (recon * img_mask).sum() / (img_mask.sum() + 1e-6)
+            recon_loss2 = (recon * visible_mask).sum() / (visible_mask.sum() + 1e-6)
+
+            with torch.no_grad():
+                target_vgg = target if C == 3 else to_3ch(target)
+            output_vgg = output if C == 3 else to_3ch(output)
+            perceptual_loss = F.l1_loss(vgg(vgg_norm(output_vgg)), vgg(vgg_norm(target_vgg)))
+
+            img1_freq_loss = rearrange(img1_freq, 'b c d h w -> b (c d) h w') if img1_freq.ndim == 5 else img1_freq
+            img2_freq_loss = rearrange(img2_freq, 'b c d h w -> b (c d) h w') if img2_freq.ndim == 5 else img2_freq
+            grad_loss = grad_loss_fn(output, img1_freq_loss, img2_freq_loss)
+
+            kl_loss = -0.5 * torch.mean(1 + posterior.logvar - posterior.mean.pow(2) - posterior.logvar.exp())
+            loss = (2 * recon_loss1) + recon_loss2 + perceptual_loss + beta * kl_loss + grad_loss
+
+            loss.backward()
+            optimizer.step()
+
+            epoch_loss += loss.item()
+            epoch_bar.set_postfix(Loss=f"{loss.item():.4f}", Recon1=f"{recon_loss1.item():.4f}",
+                                  Recon2=f"{recon_loss2.item():.4f}",
+                                  Percept=f"{perceptual_loss.item():.4f}", KL=f"{kl_loss.item():.4f}",
+                                  Grad=f"{grad_loss.item():.4f}")
+
+        avg_loss = epoch_loss / len(dataloader)
+        tqdm.write(
+            f"Stage 1.5 Epoch [{epoch + 1}/{epochs}] | Recon1: {recon_loss1:.4f} | Recon2: {recon_loss2:.4f} |Perceptual: {perceptual_loss:.4f} | KL: {kl_loss:.4f} | Grad: {grad_loss:.4f} | Avg: {avg_loss:.4f}")
+
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+            torch.save({"model_state": model.state_dict()}, save_path)
+            tqdm.write(f" Best Stage 1.5 model saved at {epoch + 1} epoch!")
+
+    return save_path
+
+def train_stage2_diffusion(model, dataloader, epochs, device, save_dir, scheduler, stage1_5_weights_path, dwt, freq='low', resume_path=None):
+    print("\n Starting Stage 2: Diffusion Transformer (DiT) Training...")
+
+    # if os.path.exists(stage1_5_weights_path):
+    #     checkpoint = torch.load(stage1_5_weights_path, map_location=device)
+    #
+    #     model.load_state_dict(checkpoint['model_state'], strict=False)
+    #     print("Pre-trained Stage 1.5 (Finetuned Decoder) weights loaded!")
+    #
+    # else:
+    #     print("Warning: Stage 1 weights not found. Training from scratch.")
+
+    # 밑에는 지울거 0.13625
+    if os.path.exists(stage1_5_weights_path):
+        checkpoint = torch.load(stage1_5_weights_path, map_location=device)
+        state_dict = checkpoint['model_state']
+
+
+        keys_to_del = [k for k in state_dict.keys() if "cond_encoder_2d" in k]
+        for k in keys_to_del:
+            del state_dict[k]
+
+        model.load_state_dict(state_dict, strict=False)
+        print(f"Pre-trained Stage 1.5 weights loaded! (Reset {len(keys_to_del)} cond_encoder keys)")
+    else:
+        print("Warning: Stage 1 weights not found. Training from scratch.")
+    model.mask_ratio = 0.0
+
+    for name, param in model.named_parameters():
+        if 'dit_model' in name or 'cond_encoder_2d' in name :
             param.requires_grad = True
         else:
             param.requires_grad = False
@@ -153,6 +269,7 @@ def train_stage2_diffusion(model, dataloader, epochs, device, save_dir, schedule
     stage2_params = filter(lambda p: p.requires_grad, model.parameters())
     optimizer = torch.optim.AdamW(stage2_params, lr=1e-4)
 
+    start_epoch = 0
     best_loss = float("inf")
     save_path = os.path.join(save_dir, f"best_stage2_{freq}_ldmae.pth")
 
@@ -177,7 +294,7 @@ def train_stage2_diffusion(model, dataloader, epochs, device, save_dir, schedule
     print("Calibrating latent scale factor...")
     model.calibrate_scale_factor(dataloader, device, dwt_fn=dwt, freq=freq, num_batches=20)
 
-    for epoch in range(epochs):
+    for epoch in range(start_epoch, epochs):
         model.train()
 
         model.Patch_Posi.eval()
@@ -188,7 +305,7 @@ def train_stage2_diffusion(model, dataloader, epochs, device, save_dir, schedule
         model.decoder_norm.eval()
         model.Decoder_pred.eval()
         model.cond_encoder_2d.train()
-        model.unet_model.train()
+        model.dit_model.train()
 
         epoch_loss = 0.0
         epoch_bar = tqdm(dataloader, desc=f"[Epoch {epoch + 1}/{epochs}]", leave=False)
@@ -206,8 +323,8 @@ def train_stage2_diffusion(model, dataloader, epochs, device, save_dir, schedule
                 if freq == 'low':
                     img1_freq, img2_freq = vis_LL, ir_LL
                 else:
-                    img1_freq = vis_HF_list[0].squeeze(2)
-                    img2_freq = ir_HF_list[0].squeeze(2)
+                    img1_freq = rearrange(vis_HF_list[0], 'b c d h w -> b (c d) h w')
+                    img2_freq = rearrange(ir_HF_list[0], 'b c d h w -> b (c d) h w')
 
             optimizer.zero_grad()
             # with torch.no_grad():
@@ -229,11 +346,10 @@ def train_stage2_diffusion(model, dataloader, epochs, device, save_dir, schedule
             loss = F.mse_loss(noise_pred, noise_target)
 
             epoch_loss += loss.item()
-
             loss.backward()
             optimizer.step()
-
             epoch_bar.set_postfix(loss=f"{loss.item():.4f}")
+
         avg_loss = epoch_loss / len(dataloader)
 
         tqdm.write(
@@ -279,7 +395,7 @@ if __name__ == "__main__":
     std = torch.tensor([0.229, 0.224, 0.225], device=device)[None, :, None, None]
     grad_loss_fn = GradientLoss().to(device)
 
-    save_dir = "LDMAE_DWT_0319_checkpoints"
+    save_dir = "LDMAE_DWT_0326_checkpoints"
     os.makedirs(save_dir, exist_ok=True)
     # low_pre_model_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\LDMAE_DWT_0319_checkpoints\best_stage1_low_vmae.pth"
     # high_pre_model_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\LDMAE_DWT_0319_checkpoints\best_stage1_high_vmae.pth"
@@ -287,7 +403,9 @@ if __name__ == "__main__":
     low_pre_model_path = r"C:\Users\12wkd\Desktop\best_stage1_low_vmae.pth"
     high_pre_model_path = r"C:\Users\12wkd\Desktop\best_stage1_high_vmae.pth"
 
-    stage1_epochs = 1000
+    low_stage1_5_path = r"C:\Users\12wkd\Desktop\experiments\MMIF\LDMAE_DWT_0326_checkpoints\best_stage1_5_low_vmae_finetuned.pth"
+
+    stage1_epochs = 5
     stage2_epochs = 1000
 
     # stage1_weights = train_stage1_vmae(
@@ -304,17 +422,32 @@ if __name__ == "__main__":
     #     freq='high',
     #     resume_path=None
     # )
+    saved_stage1_5_path = train_stage1_5_finetune_decoder(
+        model=high_model,
+        dataloader=dataloader,
+        epochs=15,
+        device=device,
+        save_dir=save_dir,
+        vgg=vgg,
+        mean=mean,
+        std=std,
+        grad_loss_fn=grad_loss_fn,
+        dwt=dwt,
+        stage1_weights_path=high_pre_model_path,
+        freq='high'
+    )
 
+    # scale_factor = 0.38472
     train_stage2_diffusion(
-        model=low_model,
+        model=high_model,
         dataloader=dataloader,
         epochs=stage2_epochs,
         device=device,
         save_dir=save_dir,
         scheduler=scheduler,
-        stage1_weights_path=low_pre_model_path,
+        stage1_5_weights_path=saved_stage1_5_path,
         dwt=dwt,
-        freq='low',
+        freq='high',
         resume_path=None
     )
     # scale factor 변경

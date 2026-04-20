@@ -1,4 +1,3 @@
-from pytorch_wavelets import DWTForward
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -12,13 +11,16 @@ import numpy as np
 from MMIF.utils.pos_emb import get_2d_sincos_pos_embed
 from MMIF.utils.misc import DiagonalGaussianDistribution
 
+
 class LDMAE(nn.Module):
     def __init__(self, in_channels=3, img_size=224, emb_dim=768, patch_size=4, num_heads=12, encoder_depth=12,
-                 decoder_embed_dim=512, decoder_num_head=16, latent_dim=32, decoder_depth=8, dit_depth=4, masking=True, freeze_encoder_in_stage2=True):
+                 decoder_embed_dim=512, decoder_num_head=16, latent_dim=32, decoder_depth=8, dit_depth=4, masking=True,
+                 freeze_encoder_in_stage2=True):
         super().__init__()
 
         self.masking = masking
         self.freeze_encoder_in_stage2 = freeze_encoder_in_stage2
+        self.mask_ratio = 0.25
         self.patch_size = patch_size
         self.img_size = img_size
         num_patches = (img_size // patch_size) ** 2
@@ -27,6 +29,7 @@ class LDMAE(nn.Module):
         self.latent_dim = latent_dim
 
         self.register_buffer('scale_factor', torch.tensor(1.0))
+        self.register_buffer('latent_mean', torch.tensor(0.0))
 
         self.Patch_Posi = Patch_Posi_embedding(in_channels, img_size, emb_dim, patch_size)
         decoder_pos_embed = get_2d_sincos_pos_embed(decoder_embed_dim, grid_size, cls_token=False)
@@ -52,23 +55,46 @@ class LDMAE(nn.Module):
 
         self.decoder_norm = nn.LayerNorm(decoder_embed_dim)
         self.Decoder_pred = conv_decoder_pred(decoder_embed_dim, patch_size, in_channels, pred_with_conv=False)
-        self.unet_model = StandardLDMUNet(in_channels=latent_dim)
+        # self.unet_model = StandardLDMUNet(in_channels=latent_dim)
 
         assert img_size % (patch_size) == 0, "img_size must be divisible by patch_size"
+        # self.cond_encoder_2d = nn.Sequential(
+        #     nn.Conv2d(in_channels, emb_dim // 2, kernel_size=3, stride=2, padding=1),
+        #     nn.GroupNorm(8, emb_dim // 2),
+        #     nn.SiLU(),
+        #     nn.Conv2d(emb_dim // 2, latent_dim, kernel_size=3, stride=2, padding=1),
+        #     nn.GroupNorm(8, latent_dim),
+        #     nn.SiLU(),
+        #     nn.AdaptiveAvgPool2d((grid_size, grid_size))
+        # )
         self.cond_encoder_2d = nn.Sequential(
-            nn.Conv2d(in_channels, emb_dim // 2, kernel_size=3, stride=2, padding=1),
-            nn.GroupNorm(8, emb_dim // 2),
-            nn.SiLU(),
-            nn.Conv2d(emb_dim // 2, latent_dim, kernel_size=3, stride=2, padding=1),
+            nn.Conv2d(in_channels, latent_dim, kernel_size=3, padding=1),
             nn.GroupNorm(8, latent_dim),
             nn.SiLU(),
-            nn.AdaptiveAvgPool2d((grid_size, grid_size))
+
+            nn.Conv2d(latent_dim, latent_dim, kernel_size=3, padding=1),
+            nn.GroupNorm(8, latent_dim),
+            nn.SiLU(),
+
+            nn.Conv2d(latent_dim, latent_dim, kernel_size=patch_size, stride=patch_size),
+            nn.GroupNorm(8, latent_dim),
+            nn.SiLU()
+        )
+
+        self.dit_model = StandardDiT(
+            latent_dim=latent_dim,
+            emb_dim=256,
+            depth=6,
+            num_heads=8,
+            cond_dim=latent_dim,
+            grid_size=self.grid_size
         )
 
     @torch.no_grad()
     def calibrate_scale_factor(self, dataloader, device, dwt_fn, freq='low', num_batches=50):
         self.eval()
         stds = []
+        means = []
         for i, (img1, img2) in enumerate(dataloader):
             if i >= num_batches:
                 break
@@ -92,19 +118,30 @@ class LDMAE(nn.Module):
             z = posterior.mean
             grid = int(z.shape[1] ** 0.5)
             z_spatial = rearrange(z, 'b (h w) c -> b c h w', h=grid, w=grid)
+
+            means.append(z.mean().item())
             stds.append(z_spatial.std().item())
 
-        self.scale_factor = torch.tensor(1.0 / (sum(stds) / len(stds))).to(device)
-        print(f"[Calibrated] scale_factor = {self.scale_factor.item():.5f}")
+        self.latent_mean.data = torch.tensor((sum(means) / len(means))).to(device)
+        self.scale_factor.data = torch.tensor(1.0 / (sum(stds) / len(stds))).to(device)
+
+        print(
+            f"[Calibrated] latent_mean = {self.latent_mean.item():.5f}, scale_factor = {self.scale_factor.item():.5f}")
 
     def _encode_to_spatial_latent(self, image1, image2):
         x_sum = image1 + image2
         x_patches = self.Patch_Posi(x_sum)
+
+        score = compute_focus_score(image1, image2, patch_size=self.Patch_Posi.patch_size)
+        mask, ids_keep, ids_mask, ids_restore = focus_mask(score, mask_ratio=self.mask_ratio)
+        x_vis = apply_focus_mask(x_patches, ids_keep)
+
         for blk in self.Encoder_blocks:
-            x_patches = blk(x_patches)
-        latent_params = self.enc_to_latent(x_patches)
+            x_vis = blk(x_vis)
+
+        latent_params = self.enc_to_latent(x_vis)
         posterior = DiagonalGaussianDistribution(latent_params)
-        return posterior
+        return posterior, ids_restore
 
     def unpatchify(self, x):
         p = self.Patch_Posi.patch_size
@@ -131,7 +168,8 @@ class LDMAE(nn.Module):
 
         if stage == 1:
             score = compute_focus_score(image1, image2, patch_size=self.Patch_Posi.patch_size)
-            mask, ids_keep, ids_mask, ids_restore = focus_mask(score, mask_ratio=0.25)
+            current_mask_ratio = self.mask_ratio if self.training else 0.0
+            mask, ids_keep, ids_mask, ids_restore = focus_mask(score, mask_ratio=current_mask_ratio)
             x_vis = apply_focus_mask(x_patches, ids_keep)
 
             for blk in self.Encoder_blocks:
@@ -139,7 +177,12 @@ class LDMAE(nn.Module):
 
             latent_params = self.enc_to_latent(x_vis)
             posterior = DiagonalGaussianDistribution(latent_params)
-            z = posterior.sample() if sample_latent else posterior.mean
+            if sample_latent:
+                z = posterior.sample()
+                if latent_scale != 1.0:
+                    z = posterior.mean + latent_scale * (z - posterior.mean)
+            else:
+                z = posterior.mean
 
             z_dec = self.latent_to_dec(z)
             B = z_dec.shape[0]
@@ -160,31 +203,29 @@ class LDMAE(nn.Module):
             x_out = self.Decoder_pred(x_full)
             x_out = self.unpatchify(x_out)
 
-            return x_out, mask, posterior
+            return x_out, mask, latent_params
 
         ########################################################
         # STAGE 2: LDM 학습 #
         ########################################################
         elif stage == 2:
-            posterior = self._encode_to_spatial_latent(image1, image2)
+            posterior, _ = self._encode_to_spatial_latent(image1, image2)
             z_full = posterior.sample() if sample_latent else posterior.mean
             B = z_full.shape[0]
 
-            z_spatial = rearrange(
-                z_full, 'b (h w) c -> b c h w', h=self.grid_size, w=self.grid_size
-            )
-
-            z_scaled = z_spatial * self.scale_factor
-
+            z_scaled = (z_full - self.latent_mean) * self.scale_factor
             noise = torch.randn_like(z_scaled)
+
             if timestep is None:
                 timestep = torch.randint(0, scheduler.timesteps, (B,), device=z_scaled.device).long()
             z_noisy = scheduler.q_sample(z_scaled, timestep, noise)
 
             cond_img = self.cond_encoder_2d(image1)
-            noise_pred = self.unet_model(x=z_noisy, timestep=timestep, cond=cond_img)
+
+            noise_pred = self.dit_model(x_seq=z_noisy, timestep=timestep, cond_spatial=cond_img)
 
             return noise, noise_pred
+
 
 #############################################################################################################
 # ViT based encoder
@@ -203,6 +244,7 @@ class Patch_Posi_embedding(nn.Module):
         x = self.Projection(x)
         x = x + self.pos_embed.to(x.device)
         return x
+
 
 class MultiHeadSelfAtt(nn.Module):
     def __init__(self, emb_dim=768, num_heads=12, att_drop=0):
@@ -233,6 +275,7 @@ class MultiHeadSelfAtt(nn.Module):
 
         return out
 
+
 class FFN(nn.Module):
     def __init__(self, emb_dim, ffn_drop=0.1):
         super().__init__()
@@ -250,6 +293,7 @@ class FFN(nn.Module):
         x = self.FFN(x) + res
         return x
 
+
 class ViT_block(nn.Module):
     def __init__(self, emb_dim, num_heads):
         super(ViT_block, self).__init__()
@@ -261,6 +305,7 @@ class ViT_block(nn.Module):
         x = self.ffn(x)
 
         return x
+
 
 #############################################################################################################
 # after encoding for downsmaple and for upsample
@@ -282,6 +327,7 @@ class Downsample(nn.Module):
 
         x = x.reshape(B, C, -1).permute(0, 2, 1)
         return x
+
 
 class Upsample(nn.Module):
     def __init__(self, in_channel, out_channel):
@@ -305,6 +351,7 @@ class Upsample(nn.Module):
         x = x.reshape(B, C, -1).permute(0, 2, 1)
         return x
 
+
 class MLP_dim_resize(nn.Module):
     def __init__(self, input_dim, hidden_dim, output_dim):
         super(MLP_dim_resize, self).__init__()
@@ -316,6 +363,7 @@ class MLP_dim_resize(nn.Module):
 
     def forward(self, x):
         return self.layers(x)
+
 
 class conv_decoder_pred(nn.Module):
     def __init__(self, decoder_embed_dim, patch_size, in_chans, pred_with_conv=True):
@@ -357,6 +405,7 @@ class conv_decoder_pred(nn.Module):
 
         return x
 
+
 #############################################################################################################
 # top 25% difference masking
 def patchify_focus(img, patch_size):
@@ -373,6 +422,7 @@ def patchify_focus(img, patch_size):
     x = x.reshape(B, h * w, C, p, p)
     return x
 
+
 def compute_focus_score(image1, image2, patch_size):
     patch_size = int(patch_size)
     p1 = patchify_focus(image1, patch_size)
@@ -382,9 +432,17 @@ def compute_focus_score(image1, image2, patch_size):
     score = diff.mean(dim=(2, 3, 4))  # (B, N)
     return score
 
+
 def focus_mask(score, mask_ratio=0.25):
     B, N = score.shape
     N_mask = int(N * mask_ratio)
+
+    if N_mask == 0:
+        ids_keep = torch.arange(N, device=score.device).unsqueeze(0).expand(B, N)
+        ids_mask = torch.empty((B, 0), dtype=torch.int64, device=score.device)
+        ids_restore = ids_keep
+        mask = torch.zeros(B, N, device=score.device)
+        return mask, ids_keep, ids_mask, ids_restore
 
     _, ids_mask = torch.topk(score, N_mask, dim=1)
     ids_keep = torch.argsort(score, dim=1)[:, :-N_mask]
@@ -399,6 +457,7 @@ def focus_mask(score, mask_ratio=0.25):
 
     return mask, ids_keep, ids_mask, ids_restore
 
+
 def apply_focus_mask_keep_grid(x, mask):
     """
     x: (B, N, C)
@@ -407,6 +466,7 @@ def apply_focus_mask_keep_grid(x, mask):
     mask = mask.unsqueeze(-1)  # (B, N, 1)
     x = x * (1.0 - mask)  # masked token = 0
     return x
+
 
 def apply_focus_mask(x, ids_keep):
     """
@@ -420,10 +480,12 @@ def apply_focus_mask(x, ids_keep):
     )
     return x_visible
 
+
 def apply_focus_mask_with_token(x, mask, mask_token):
     B, N, C = x.shape
     mask = mask.unsqueeze(-1)
     return x * (1.0 - mask) + mask * mask_token
+
 
 #############################################################################################################
 # diffusion Module
@@ -436,6 +498,7 @@ def cosine_beta_schedule(timesteps, s=0.008):
     betas = 1 - (alphas_cumprod[1:] / alphas_cumprod[:-1])
 
     return torch.clip(betas, 0.0001, 0.9999)
+
 
 class DiffusionScheduler:
     def __init__(self, timesteps=1000, beta_start=1e-4, beta_end=0.02, schedule_type='linear'):
@@ -471,6 +534,7 @@ class DiffusionScheduler:
         out = a.to(t.device).gather(-1, t)
         return out.reshape(batch_size, *((1,) * (len(x_shape) - 1)))
 
+
 class SinusoidalPositionEmbeddings(nn.Module):
     def __init__(self, dim):
         super().__init__()
@@ -484,6 +548,7 @@ class SinusoidalPositionEmbeddings(nn.Module):
         embeddings = time[:, None] * embeddings[None, :]
         embeddings = torch.cat((embeddings.sin(), embeddings.cos()), dim=-1)
         return embeddings
+
 
 class CrossAttention(nn.Module):
     def __init__(self, query_dim, context_dim=None, heads=8, dim_head=64):
@@ -520,6 +585,7 @@ class CrossAttention(nn.Module):
 
         out = rearrange(out, 'b h n d -> b n (h d)')
         return self.to_out(out)
+
 
 class SpatialCrossAttention(nn.Module):
 
@@ -565,6 +631,7 @@ class ResidualMLPBlock(nn.Module):
 
         return self.norm2(x + out)
 
+
 class Block(nn.Module):
     def __init__(self, in_ch, out_ch, time_emb_dim, up=False):
         super().__init__()
@@ -595,6 +662,7 @@ class Block(nn.Module):
 
         h = self.bnorm2(self.relu(self.conv2(h)))
         return self.transform(h)
+
 
 class SimpleUNet(nn.Module):
     def __init__(self):
@@ -638,6 +706,7 @@ class SimpleUNet(nn.Module):
             x = up(x, t, cond)
 
         return self.output(x)
+
 
 class SimpleUNetWithAttention(nn.Module):
     def __init__(self):
@@ -697,6 +766,7 @@ class SimpleUNetWithAttention(nn.Module):
             x = up(x, t, cond)
 
         return self.output(x)
+
 
 class DiTBlock(nn.Module):
     def __init__(self, emb_dim, num_heads, time_emb_dim, cond_dim):
@@ -770,6 +840,7 @@ class LDM_SpatialTransformer(nn.Module):
 
         return residual + x
 
+
 class LDMBlock(nn.Module):
     def __init__(self, in_ch, out_ch, time_emb_dim, up=False):
         super().__init__()
@@ -798,13 +869,13 @@ class LDMBlock(nn.Module):
         h = self.bnorm2(self.silu(self.conv2(h)))
         return self.transform(h)
 
+
 class StandardLDMUNet(nn.Module):
     def __init__(self, in_channels=32):
         super().__init__()
 
         image_channels = in_channels
         cond_channels = in_channels
-
 
         down_channels = (64, 128, 256)
 
@@ -882,3 +953,51 @@ class StandardLDMUNet(nn.Module):
         x = torch.cat([x, x_stem_skip], dim=1)
 
         return self.output(x)
+
+
+class StandardDiT(nn.Module):
+    def __init__(self, latent_dim=32, emb_dim=256, depth=6, num_heads=8, cond_dim=128, grid_size=28):
+        super().__init__()
+        self.latent_dim = latent_dim
+        self.emb_dim = emb_dim
+        self.grid_size = grid_size
+        num_patches = grid_size * grid_size
+
+        self.time_mlp = nn.Sequential(
+            SinusoidalPositionEmbeddings(emb_dim),
+            nn.Linear(emb_dim, emb_dim * 4),
+            nn.SiLU(),
+            nn.Linear(emb_dim * 4, emb_dim)
+        )
+
+        self.proj_in = nn.Linear(latent_dim, emb_dim)
+        self.pos_embed = nn.Parameter(torch.randn(1, num_patches, emb_dim) * 0.02)
+
+        self.cond_proj = nn.Linear(cond_dim, cond_dim)
+        self.cond_pos_embed = nn.Parameter(torch.randn(1, num_patches, cond_dim) * 0.02)
+
+        self.blocks = nn.ModuleList([
+            DiTBlock(emb_dim=emb_dim, num_heads=num_heads, time_emb_dim=emb_dim, cond_dim=cond_dim)
+            for _ in range(depth)
+        ])
+
+        self.norm_out = nn.LayerNorm(emb_dim)
+        self.proj_out = nn.Linear(emb_dim, latent_dim)
+
+        nn.init.zeros_(self.proj_out.weight)
+        nn.init.zeros_(self.proj_out.bias)
+
+    def forward(self, x_seq, timestep, cond_spatial):
+        t_emb = self.time_mlp(timestep)
+
+        cond_seq = rearrange(cond_spatial, 'b c h w -> b (h w) c')
+        cond_seq = self.cond_proj(cond_seq)
+        cond_seq = cond_seq + self.cond_pos_embed
+
+        x = self.proj_in(x_seq) + self.pos_embed
+
+        for blk in self.blocks:
+            x = blk(x, t_emb, cond_seq)
+
+        x = self.norm_out(x)
+        return self.proj_out(x)

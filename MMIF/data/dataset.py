@@ -42,7 +42,7 @@ def ex_data_dwt(root_dir):
 
     X = trans(img).to(device)
     X = X.unsqueeze(0)
-    xfm = DWTForward(J=1, mode="periodization", wave='haar').to(device)
+    xfm = DWTForward(J=1, mode="zero", wave='haar').to(device)
     x_low, x_high = xfm(X)
     x_low = x_low.to(device)
 
